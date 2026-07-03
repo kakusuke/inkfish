@@ -28,6 +28,9 @@ const btnEdit = $<HTMLButtonElement>("btn-edit");
 const settingsPop = $<HTMLElement>("settings-pop");
 const editorCmdInput = $<HTMLInputElement>("editor-cmd");
 const toast = $<HTMLElement>("toast");
+const findBar = $<HTMLElement>("find-bar");
+const findInput = $<HTMLInputElement>("find-input");
+const findCount = $<HTMLElement>("find-count");
 
 // ---------- 状態 ----------
 let currentPath: string | null = null;
@@ -147,6 +150,7 @@ async function render() {
 
   viewport.scrollTop = scrollTop;
   updateProgress();
+  refreshFind();
   viewport.classList.remove("refresh");
   requestAnimationFrame(() => viewport.classList.add("refresh"));
 }
@@ -424,6 +428,142 @@ function showToast(msg: string) {
   toastTimer = setTimeout(() => toast.classList.add("hidden"), 2800);
 }
 
+// ---------- ページ内検索 ----------
+// DOM を書き換えず CSS Custom Highlight API でマッチを塗る。テキストランを
+// 分割しないので、折り返し(改行)位置が検索によって変わらない。
+// WebKit は highlights を消し替えても旧領域を再描画しないことがあるため、
+// 変更後に対象コンテンツを一度だけ同期的に再描画してゴーストを消す。
+const btnFindPrev = $<HTMLButtonElement>("find-prev");
+const btnFindNext = $<HTMLButtonElement>("find-next");
+const HL_SUPPORTED = typeof CSS !== "undefined" && "highlights" in CSS;
+
+let findMatches: Range[] = [];
+let findIndex = -1;
+
+// 表示中のコンテンツ(本文 or スライド)を検索対象にする
+const findRoot = () => (slidesEl.classList.contains("hidden") ? docEl : slidesEl);
+
+// highlights を消し替えても WebKit が旧領域を再描画しないので、描画だけを強制して
+// ゴーストを消す。filter の有無をトグルすると中身がバッファへ再ラスタライズされる。
+// brightness(1) は恒等フィルタなのでピクセルは完全に不変(透明化もなし)。
+// レイアウト・スクロール・見た目はいずれも動かない。
+let repaintNudge = false;
+function forceRepaint() {
+  repaintNudge = !repaintNudge;
+  findRoot().style.filter = repaintNudge ? "brightness(1)" : "";
+}
+
+function clearHighlights() {
+  if (!HL_SUPPORTED) return;
+  CSS.highlights.delete("find-match");
+  CSS.highlights.delete("find-current");
+}
+
+function runFind(query: string, autoScroll = true) {
+  if (!HL_SUPPORTED) return;
+  findMatches = [];
+  findIndex = -1;
+
+  const q = query.toLowerCase();
+  if (q) {
+    const walker = document.createTreeWalker(findRoot(), NodeFilter.SHOW_TEXT, {
+      acceptNode(n) {
+        const tag = n.parentElement?.tagName;
+        if (tag === "STYLE" || tag === "SCRIPT") return NodeFilter.FILTER_REJECT;
+        return (n.nodeValue ?? "").toLowerCase().includes(q)
+          ? NodeFilter.FILTER_ACCEPT
+          : NodeFilter.FILTER_REJECT;
+      },
+    });
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const hay = (node.nodeValue ?? "").toLowerCase();
+      for (let i = hay.indexOf(q); i !== -1; i = hay.indexOf(q, i + q.length)) {
+        const range = document.createRange();
+        range.setStart(node, i);
+        range.setEnd(node, i + q.length);
+        findMatches.push(range);
+      }
+    }
+  }
+
+  if (findMatches.length) {
+    // 現在のスクロール位置以降の最初のマッチを選ぶ
+    findIndex = findMatches.findIndex((r) => r.getBoundingClientRect().top >= 0);
+    if (findIndex === -1) findIndex = 0;
+  }
+  applyHighlights(autoScroll);
+  updateFindUI();
+}
+
+function applyHighlights(scroll: boolean) {
+  if (!HL_SUPPORTED) return;
+  if (findMatches.length) {
+    CSS.highlights.set("find-match", new Highlight(...findMatches));
+    CSS.highlights.set("find-current", new Highlight(findMatches[findIndex]));
+  } else {
+    clearHighlights();
+  }
+  forceRepaint();
+  if (scroll && findMatches.length) {
+    const rect = findMatches[findIndex].getBoundingClientRect();
+    const target = viewport.scrollTop + rect.top - viewport.clientHeight / 2;
+    viewport.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
+  }
+}
+
+function moveFind(delta: number) {
+  if (!findMatches.length) return;
+  findIndex = (findIndex + delta + findMatches.length) % findMatches.length;
+  applyHighlights(true);
+  updateFindUI();
+}
+
+function updateFindUI() {
+  const q = findInput.value;
+  const total = findMatches.length;
+  findCount.textContent = q ? `${total ? findIndex + 1 : 0}/${total}` : "";
+  findCount.classList.toggle("empty", !!q && total === 0);
+  btnFindPrev.disabled = total === 0;
+  btnFindNext.disabled = total === 0;
+}
+
+function openFind() {
+  findBar.classList.remove("hidden");
+  const sel = getSelection()?.toString().trim();
+  if (sel && sel.length <= 100) findInput.value = sel;
+  findInput.focus();
+  findInput.select();
+  runFind(findInput.value);
+}
+
+function closeFind() {
+  findBar.classList.add("hidden");
+  clearHighlights();
+  forceRepaint();
+  findMatches = [];
+  findIndex = -1;
+  viewport.focus();
+}
+
+// 再描画でマッチ範囲が無効になるので、開いていれば張り直す(スクロールはしない)
+function refreshFind() {
+  if (!findBar.classList.contains("hidden")) runFind(findInput.value, false);
+}
+
+findInput.addEventListener("input", () => runFind(findInput.value));
+findInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    moveFind(e.shiftKey ? -1 : 1);
+  } else if (e.key === "Escape") {
+    e.preventDefault();
+    closeFind();
+  }
+});
+btnFindPrev.addEventListener("click", () => moveFind(-1));
+btnFindNext.addEventListener("click", () => moveFind(1));
+$("find-close").addEventListener("click", closeFind);
+
 // ---------- キーボード / ズーム ----------
 function setScale(v: number) {
   fontScale = Math.min(1.6, Math.max(0.7, v));
@@ -435,6 +575,7 @@ window.addEventListener("keydown", (e) => {
   switch (e.key) {
     case "o": e.preventDefault(); openFileDialog(); break;
     case "e": e.preventDefault(); openInEditor(); break;
+    case "f": e.preventDefault(); openFind(); break;
     case "=": case "+": e.preventDefault(); setScale(fontScale + 0.1); break;
     case "-": e.preventDefault(); setScale(fontScale - 0.1); break;
     case "0": e.preventDefault(); setScale(1); break;

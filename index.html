@@ -34,6 +34,23 @@
     <!-- 読書プログレスバー(ツールバー下端の細いライン) -->
     <div id="progress" aria-hidden="true"></div>
 
+    <div id="find-bar" class="hidden">
+      <svg class="find-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="7" cy="7" r="4.2"/><path d="M10.2 10.2L14 14"/></svg>
+      <input id="find-input" type="text" spellcheck="false" placeholder="ページ内を検索" />
+      <span id="find-count">0/0</span>
+      <div class="find-nav">
+        <button id="find-prev" class="find-btn" title="前へ (⇧Enter)">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10l4-4 4 4"/></svg>
+        </button>
+        <button id="find-next" class="find-btn" title="次へ (Enter)">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6l4 4 4-4"/></svg>
+        </button>
+        <button id="find-close" class="find-btn" title="閉じる (Esc)">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+        </button>
+      </div>
+    </div>
+
     <div id="settings-pop" class="hidden">
       <label for="editor-cmd">外部エディタのコマンド</label>
       <input id="editor-cmd" type="text" spellcheck="false" placeholder="code {path}" />

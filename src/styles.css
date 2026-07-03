@@ -671,6 +671,107 @@ body.dropping #viewport {
 }
 
 /* ============================================================
+   ページ内検索バー
+   ============================================================ */
+#find-bar {
+  position: fixed;
+  top: 62px;
+  right: 14px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 6px 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+}
+
+#find-bar .find-icon {
+  flex: none;
+  color: var(--ink-2);
+}
+
+#find-input {
+  width: 200px;
+  padding: 3px 2px;
+  font-family: var(--sans);
+  font-size: 13px;
+  color: var(--ink);
+  background: none;
+  border: none;
+}
+
+#find-input:focus {
+  outline: none;
+}
+
+#find-input::placeholder {
+  color: var(--ink-2);
+}
+
+#find-count {
+  flex: none;
+  min-width: 40px;
+  text-align: right;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+
+#find-count.empty {
+  color: #d4504c;
+}
+
+.find-nav {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-left: 6px;
+  border-left: 1px solid var(--line);
+}
+
+.find-btn {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-2);
+  cursor: default;
+}
+
+.find-btn:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.find-btn:disabled {
+  opacity: 0.35;
+  background: transparent;
+  color: var(--ink-2);
+}
+
+.find-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* 検索マッチ。CSS Custom Highlight API で塗る(DOM を変えないので改行が動かない) */
+::highlight(find-match) {
+  background-color: color-mix(in srgb, var(--accent) 26%, transparent);
+}
+
+::highlight(find-current) {
+  background-color: var(--accent);
+  color: #fff;
+}
+
+/* ============================================================
    設定ポップオーバー
    ============================================================ */
 #settings-pop {
