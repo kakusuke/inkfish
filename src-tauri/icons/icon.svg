@@ -1,0 +1,46 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1d252d"/>
+      <stop offset="1" stop-color="#12171c"/>
+    </linearGradient>
+    <linearGradient id="ink" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fbfcfc"/>
+      <stop offset="1" stop-color="#e8edef"/>
+    </linearGradient>
+  </defs>
+
+  <!-- macOS icon grid: 824x824 rounded rect centered -->
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#bg)"/>
+
+  <g>
+    <!-- hood / mantle -->
+    <path d="M512 214
+             C 588 214 650 296 650 402
+             L 650 520
+             C 650 596 588 650 512 650
+             C 436 650 374 596 374 520
+             L 374 402
+             C 374 296 436 214 512 214 Z"
+          fill="url(#ink)"/>
+    <!-- fins -->
+    <path d="M382 330 C 330 348 300 402 302 458 C 336 442 368 428 380 410 Z" fill="url(#ink)"/>
+    <path d="M642 330 C 694 348 724 402 722 458 C 688 442 656 428 644 410 Z" fill="url(#ink)"/>
+
+    <!-- eyes -->
+    <circle cx="452" cy="516" r="34" fill="#12171c"/>
+    <circle cx="572" cy="516" r="34" fill="#12171c"/>
+    <circle cx="452" cy="516" r="13" fill="#35c6af"/>
+    <circle cx="572" cy="516" r="13" fill="#35c6af"/>
+
+    <!-- tentacles -->
+    <path d="M420 648 C 420 700 400 716 366 738 C 396 742 428 726 440 700 L 446 652 Z" fill="url(#ink)"/>
+    <path d="M604 648 C 604 700 624 716 658 738 C 628 742 596 726 584 700 L 578 652 Z" fill="url(#ink)"/>
+    <path d="M470 654 C 470 716 452 748 418 782 C 456 778 486 744 494 706 L 496 658 Z" fill="url(#ink)"/>
+    <path d="M554 654 C 554 716 572 748 606 782 C 568 778 538 744 530 706 L 528 658 Z" fill="url(#ink)"/>
+    <path d="M500 658 C 500 726 506 768 512 810 C 518 768 524 726 524 658 Z" fill="url(#ink)"/>
+  </g>
+
+  <!-- ink drop: markdown written in squid ink -->
+  <path d="M512 838 C 520 852 528 864 528 874 A 16 16 0 1 1 496 874 C 496 864 504 852 512 838 Z" fill="#35c6af"/>
+</svg>

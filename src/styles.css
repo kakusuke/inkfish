@@ -1,0 +1,770 @@
+/* ============================================================
+   Markdown Viewer — design tokens
+   クールペーパー × ティール。読むための静かな道具。
+   ============================================================ */
+:root {
+  --bg: #f4f6f7;
+  --surface: #ffffff;
+  --ink: #1b242c;
+  --ink-2: #64707b;
+  --line: #e1e7ea;
+  --accent: #0e7c6b;
+  --accent-soft: rgba(14, 124, 107, 0.1);
+  --code-bg: #edf1f3;
+  --shadow: 0 1px 2px rgba(16, 24, 32, 0.06), 0 8px 24px rgba(16, 24, 32, 0.08);
+  --toolbar-bg: rgba(244, 246, 247, 0.82);
+  --scale: 1;
+
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Segoe UI", sans-serif;
+
+  /* code syntax (GitHub 系・可読性優先) */
+  --hl-kw: #cf222e;
+  --hl-str: #0a3069;
+  --hl-fn: #8250df;
+  --hl-num: #0550ae;
+  --hl-cm: #6e7781;
+  --hl-attr: #116329;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14181c;
+    --surface: #1b2126;
+    --ink: #dae2e8;
+    --ink-2: #8a98a4;
+    --line: #2a3239;
+    --accent: #35c6af;
+    --accent-soft: rgba(53, 198, 175, 0.12);
+    --code-bg: #20272d;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.35);
+    --toolbar-bg: rgba(20, 24, 28, 0.82);
+
+    --hl-kw: #ff7b72;
+    --hl-str: #a5d6ff;
+    --hl-fn: #d2a8ff;
+    --hl-num: #79c0ff;
+    --hl-cm: #8b949e;
+    --hl-attr: #7ee787;
+  }
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  font-family: var(--sans);
+  background: var(--bg);
+  color: var(--ink);
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+.hidden {
+  display: none !important;
+}
+
+/* ============================================================
+   ツールバー(タイトルバーオーバーレイ)
+   ============================================================ */
+#toolbar {
+  position: fixed;
+  inset: 0 0 auto 0;
+  height: 54px;
+  display: flex;
+  align-items: center;
+  padding: 0 12px 0 84px; /* 左は信号機ボタンの分 */
+  background: var(--toolbar-bg);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  border-bottom: 1px solid var(--line);
+  z-index: 10;
+  user-select: none;
+}
+
+.tb-spacer {
+  flex: 1;
+}
+
+/* --- シグネチャ: ライブカプセル --- */
+#capsule {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 46vw;
+  padding: 5px 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink);
+}
+
+#file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#live-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ink-2);
+}
+
+#live-dot[data-state="watching"] {
+  background: var(--accent);
+  animation: pulse 2.4s ease-in-out infinite;
+}
+
+#live-dot[data-state="error"] {
+  background: #d4504c;
+  animation: none;
+}
+
+@keyframes pulse {
+  0%, 100% { box-shadow: 0 0 0 0 var(--accent-soft); }
+  50% { box-shadow: 0 0 0 5px var(--accent-soft); }
+}
+
+#mode-badge {
+  flex: none;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.tb-actions {
+  display: flex;
+  gap: 2px;
+}
+
+.tb-btn {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ink-2);
+  cursor: default;
+}
+
+.tb-btn:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.tb-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* ============================================================
+   読書プログレスバー
+   ============================================================ */
+#progress {
+  position: fixed;
+  top: 53px;
+  left: 0;
+  width: 100%;
+  height: 2px;
+  z-index: 11;
+  background: var(--accent);
+  transform: scaleX(var(--progress, 0));
+  transform-origin: 0 50%;
+  pointer-events: none;
+}
+
+/* ============================================================
+   ビューポート
+   ============================================================ */
+#viewport {
+  height: 100%;
+  overflow-y: auto;
+  padding-top: 54px;
+  scrollbar-gutter: stable both-edges;
+}
+
+#viewport.refresh #doc,
+#viewport.refresh .deck {
+  animation: settle 0.28s ease-out;
+}
+
+@keyframes settle {
+  from { opacity: 0.55; }
+  to { opacity: 1; }
+}
+
+body.dropping #viewport {
+  outline: 2px dashed var(--accent);
+  outline-offset: -8px;
+  border-radius: 12px;
+}
+
+/* ============================================================
+   空の状態
+   ============================================================ */
+#empty {
+  min-height: calc(100vh - 54px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 36px;
+  padding: 40px 24px;
+}
+
+.drop-card {
+  text-align: center;
+}
+
+.drop-card .mark {
+  font-family: var(--mono);
+  font-size: 44px;
+  font-weight: 700;
+  color: var(--ink);
+  margin-bottom: 18px;
+}
+
+.drop-card .mark span {
+  color: var(--accent);
+}
+
+.drop-card .lead {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.drop-card .sub {
+  margin-top: 6px;
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+
+.drop-card kbd {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 1px 5px;
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--surface);
+}
+
+#empty-open {
+  margin-top: 20px;
+  padding: 7px 18px;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: var(--sans);
+  color: #fff;
+  background: var(--accent);
+  border: none;
+  border-radius: 7px;
+  cursor: default;
+}
+
+#empty-open:hover {
+  filter: brightness(1.08);
+}
+
+#recents {
+  width: min(480px, 90%);
+}
+
+#recents h2 {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  margin-bottom: 8px;
+}
+
+#recent-list {
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+#recent-list li + li {
+  border-top: 1px solid var(--line);
+}
+
+#recent-list button {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  width: 100%;
+  padding: 9px 14px;
+  text-align: left;
+  background: none;
+  border: none;
+  cursor: default;
+  font-family: var(--sans);
+}
+
+#recent-list button:hover {
+  background: var(--accent-soft);
+}
+
+.r-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.r-path {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+/* ============================================================
+   本文 (GFM) — ウィンドウ幅に追従する「紙のシート」
+   幅・余白・文字サイズはすべてウィンドウ幅から流動的に決まり、
+   行長だけ読みやすい上限 (1240px) でキャップする。
+   ============================================================ */
+.markdown-body {
+  width: min(100% - clamp(28px, 5vw, 80px), 1240px);
+  margin: 26px auto 96px;
+  padding: clamp(32px, 4.5vw, 64px) clamp(28px, 5.5vw, 88px) clamp(48px, 6vw, 88px);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  font-size: calc(clamp(14.5px, 13.2px + 0.28vw, 17px) * var(--scale));
+  line-height: 1.8;
+}
+
+.markdown-body > *:first-child {
+  margin-top: 0;
+}
+
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 {
+  margin: 1.9em 0 0.7em;
+  line-height: 1.35;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.markdown-body h1 {
+  font-size: 2em;
+  letter-spacing: -0.02em;
+  padding-bottom: 0.35em;
+  border-bottom: 1px solid var(--line);
+}
+
+.markdown-body h2 {
+  font-size: 1.45em;
+  padding-bottom: 0.25em;
+  border-bottom: 1px solid var(--line);
+}
+
+.markdown-body h3 { font-size: 1.2em; }
+.markdown-body h4 { font-size: 1.05em; }
+.markdown-body h5, .markdown-body h6 { font-size: 0.95em; color: var(--ink-2); }
+
+.markdown-body p,
+.markdown-body ul,
+.markdown-body ol,
+.markdown-body table,
+.markdown-body blockquote,
+.markdown-body pre,
+.markdown-body details {
+  margin-bottom: 1em;
+}
+
+.markdown-body ul,
+.markdown-body ol {
+  padding-left: 1.7em;
+}
+
+.markdown-body li > ul,
+.markdown-body li > ol {
+  margin-bottom: 0;
+}
+
+.markdown-body a {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+}
+
+.markdown-body a:hover {
+  border-bottom-color: var(--accent);
+}
+
+.markdown-body blockquote {
+  padding: 10px 18px;
+  border-left: 3px solid var(--accent);
+  border-radius: 0 8px 8px 0;
+  background: color-mix(in srgb, var(--code-bg) 55%, transparent);
+  color: var(--ink-2);
+}
+
+.markdown-body blockquote > *:last-child {
+  margin-bottom: 0;
+}
+
+.markdown-body hr {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 2.2em 0;
+}
+
+.markdown-body img {
+  max-width: 100%;
+  border-radius: 6px;
+}
+
+.markdown-body kbd {
+  font-family: var(--mono);
+  font-size: 0.82em;
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  background: var(--code-bg);
+}
+
+/* --- コード --- */
+.markdown-body code {
+  font-family: var(--mono);
+  font-size: 0.86em;
+  background: var(--code-bg);
+  padding: 0.15em 0.4em;
+  border-radius: 5px;
+}
+
+.markdown-body pre {
+  background: var(--code-bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 15px 18px;
+  overflow-x: auto;
+  line-height: 1.6;
+}
+
+.markdown-body pre code {
+  background: none;
+  padding: 0;
+  font-size: 0.86em;
+}
+
+/* pre を包むラッパー。言語ラベルとコピーボタンを
+   横スクロールに巻き込まれない位置に重ねるための土台。 */
+.markdown-body .code-block {
+  position: relative;
+  margin-bottom: 1em;
+}
+
+.markdown-body .code-block pre {
+  margin-bottom: 0;
+}
+
+.markdown-body .code-block[data-lang]::before {
+  content: attr(data-lang);
+  position: absolute;
+  top: 9px;
+  right: 14px;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  opacity: 0.75;
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+
+.markdown-body .code-block:hover[data-lang]::before {
+  opacity: 0;
+}
+
+.code-copy {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  padding: 3px 10px;
+  font-family: var(--sans);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-2);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: default;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.markdown-body .code-block:hover .code-copy,
+.code-copy:focus-visible {
+  opacity: 1;
+}
+
+.code-copy:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.code-copy.done {
+  color: var(--accent);
+  border-color: var(--accent);
+  opacity: 1;
+}
+
+.code-copy:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* --- テーブル(枠は外周のみ、中は水平罫線だけの静かな表) --- */
+.markdown-body table {
+  border-collapse: separate;
+  border-spacing: 0;
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  font-size: 0.93em;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.markdown-body th,
+.markdown-body td {
+  border: none;
+  border-bottom: 1px solid var(--line);
+  padding: 8px 16px;
+}
+
+.markdown-body tr:last-child td {
+  border-bottom: none;
+}
+
+.markdown-body th {
+  background: var(--code-bg);
+  font-weight: 600;
+  text-align: left;
+  font-size: 0.92em;
+  letter-spacing: 0.02em;
+}
+
+.markdown-body th:first-child { border-top-left-radius: 9px; }
+.markdown-body th:last-child { border-top-right-radius: 9px; }
+.markdown-body tr:last-child td:first-child { border-bottom-left-radius: 9px; }
+.markdown-body tr:last-child td:last-child { border-bottom-right-radius: 9px; }
+
+.markdown-body tbody tr:hover td {
+  background: color-mix(in srgb, var(--code-bg) 45%, transparent);
+}
+
+/* --- タスクリスト --- */
+.markdown-body .task-list-item {
+  list-style: none;
+  margin-left: -1.4em;
+}
+
+.markdown-body .task-list-item input {
+  accent-color: var(--accent);
+  margin-right: 0.45em;
+  vertical-align: -0.1em;
+}
+
+/* --- 脚注 --- */
+.markdown-body .footnotes {
+  margin-top: 3em;
+  font-size: 0.88em;
+  color: var(--ink-2);
+}
+
+/* --- Mermaid --- */
+.mermaid-block {
+  display: flex;
+  justify-content: center;
+  margin: 1.4em 0;
+  padding: 20px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow-x: auto;
+}
+
+.mermaid-block svg {
+  max-width: 100%;
+}
+
+/* --- syntax highlight --- */
+.hljs-keyword, .hljs-selector-tag, .hljs-meta .hljs-keyword, .hljs-doctag { color: var(--hl-kw); }
+.hljs-string, .hljs-regexp, .hljs-meta-string { color: var(--hl-str); }
+.hljs-title, .hljs-title.function_, .hljs-title.class_, .hljs-section { color: var(--hl-fn); }
+.hljs-number, .hljs-literal, .hljs-built_in, .hljs-variable.language_ { color: var(--hl-num); }
+.hljs-comment, .hljs-quote { color: var(--hl-cm); font-style: italic; }
+.hljs-attr, .hljs-attribute, .hljs-selector-class, .hljs-selector-id, .hljs-symbol, .hljs-bullet { color: var(--hl-attr); }
+.hljs-name, .hljs-selector-pseudo, .hljs-template-tag { color: var(--hl-attr); }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: 700; }
+
+/* ============================================================
+   Marp スライド
+   ============================================================ */
+/* スライドはウィンドウ幅に追従して拡大・縮小する(svg が width:100% のため
+   .deck の幅がそのままスライドの大きさになる)。上限だけ緩めに設ける。 */
+#slides .deck {
+  max-width: 1680px;
+  margin: 0 auto;
+  padding: 32px clamp(20px, 3.5vw, 56px) 120px;
+}
+
+/* Marp が生成する .marpit がスライド(svg)を束ねる実コンテナ。
+   ここを flex にしないと .deck 直下は .marpit 1 個だけで gap が効かない。 */
+#slides .marpit {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 28px;
+}
+
+#slides .deck svg[data-marpit-svg] {
+  display: block;
+  width: 100%;
+  height: auto;
+  /* WKWebView は viewBox からの縦横比推定が不安定なので明示する */
+  aspect-ratio: 1280 / 720;
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  background: #fff;
+}
+
+/* ============================================================
+   設定ポップオーバー
+   ============================================================ */
+#settings-pop {
+  position: fixed;
+  top: 60px;
+  right: 12px;
+  z-index: 20;
+  width: 340px;
+  padding: 16px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+}
+
+#settings-pop label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 7px;
+}
+
+#settings-pop input {
+  width: 100%;
+  padding: 7px 10px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+
+#settings-pop input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+#settings-pop .hint {
+  margin-top: 8px;
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--ink-2);
+}
+
+#settings-pop .hint code {
+  font-family: var(--mono);
+  background: var(--code-bg);
+  padding: 0 4px;
+  border-radius: 4px;
+}
+
+#settings-save {
+  margin-top: 12px;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: var(--sans);
+  color: #fff;
+  background: var(--accent);
+  border: none;
+  border-radius: 6px;
+  cursor: default;
+}
+
+#settings-save:hover {
+  filter: brightness(1.08);
+}
+
+/* ============================================================
+   トースト
+   ============================================================ */
+#toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  max-width: 70vw;
+  padding: 9px 18px;
+  font-size: 12.5px;
+  background: var(--ink);
+  color: var(--bg);
+  border-radius: 999px;
+  box-shadow: var(--shadow);
+}
+
+/* ============================================================
+   その他
+   ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+  #live-dot[data-state="watching"],
+  #viewport.refresh #doc,
+  #viewport.refresh .deck {
+    animation: none;
+  }
+}

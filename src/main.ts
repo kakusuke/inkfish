@@ -1,0 +1,471 @@
+import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import MarkdownIt from "markdown-it";
+import anchor from "markdown-it-anchor";
+import taskLists from "markdown-it-task-lists";
+import footnote from "markdown-it-footnote";
+import hljs from "highlight.js/lib/common";
+import DOMPurify from "dompurify";
+import type { Marp } from "@marp-team/marp-core";
+import type { MarpCoreBrowser } from "@marp-team/marp-core/browser";
+import type { Mermaid } from "mermaid";
+
+// ---------- DOM ----------
+const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
+const viewport = $<HTMLElement>("viewport");
+const docEl = $<HTMLElement>("doc");
+const slidesEl = $<HTMLElement>("slides");
+const emptyEl = $<HTMLElement>("empty");
+const capsule = $<HTMLElement>("capsule");
+const fileNameEl = $<HTMLElement>("file-name");
+const liveDot = $<HTMLElement>("live-dot");
+const modeBadge = $<HTMLElement>("mode-badge");
+const btnEdit = $<HTMLButtonElement>("btn-edit");
+const settingsPop = $<HTMLElement>("settings-pop");
+const editorCmdInput = $<HTMLInputElement>("editor-cmd");
+const toast = $<HTMLElement>("toast");
+
+// ---------- 状態 ----------
+let currentPath: string | null = null;
+let currentSource = "";
+let fontScale = 1;
+let reloadTimer: ReturnType<typeof setTimeout> | undefined;
+
+const isDark = () => matchMedia("(prefers-color-scheme: dark)").matches;
+
+// ---------- Markdown (GFM) ----------
+const md: MarkdownIt = new MarkdownIt({
+  html: true,
+  linkify: true,
+  highlight: (code, lang) => {
+    if (lang && hljs.getLanguage(lang)) {
+      try {
+        return hljs.highlight(code, { language: lang }).value;
+      } catch {
+        /* fall through */
+      }
+    }
+    return "";
+  },
+})
+  .use(anchor, { tabIndex: false })
+  .use(taskLists, { label: true })
+  .use(footnote);
+
+// ```mermaid ブロックはハイライトせず mermaid 用のコンテナにする
+const defaultFence = md.renderer.rules.fence!;
+md.renderer.rules.fence = (tokens, idx, options, env, self) => {
+  const token = tokens[idx];
+  const lang = token.info.trim().split(/\s+/)[0];
+  if (lang === "mermaid") {
+    return `<div class="mermaid-block">${md.utils.escapeHtml(token.content)}</div>`;
+  }
+  return defaultFence(tokens, idx, options, env, self);
+};
+
+// mermaid / marp-core は重いので必要になるまでロードしない
+let mermaid: Mermaid | null = null;
+async function getMermaid(): Promise<Mermaid> {
+  if (!mermaid) {
+    mermaid = (await import("mermaid")).default;
+    initMermaid();
+  }
+  return mermaid;
+}
+
+function initMermaid() {
+  mermaid?.initialize({
+    startOnLoad: false,
+    securityLevel: "antiscript",
+    theme: isDark() ? "dark" : "neutral",
+    fontFamily: "ui-monospace, SF Mono, Menlo, monospace",
+  });
+}
+
+// ---------- Marp ----------
+let marp: Marp | null = null;
+let marpBrowser: MarpCoreBrowser | null = null;
+
+async function getMarp(): Promise<Marp> {
+  if (!marp) {
+    const { Marp: MarpCore } = await import("@marp-team/marp-core");
+    // html はデフォルトの安全なタグのみ許可(スクリプト注入を防ぐ)。
+    // script は innerHTML 挿入では実行されないので同梱させず、
+    // 代わりに render 後に browser() を明示的に呼ぶ。
+    marp = new MarpCore({ inlineSVG: true, script: false });
+  }
+  return marp;
+}
+
+function isMarpDocument(src: string): boolean {
+  const fm = src.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  return !!fm && /^\s*marp\s*:\s*true\s*$/m.test(fm[1]);
+}
+
+// ---------- レンダリング ----------
+async function render() {
+  const scrollTop = viewport.scrollTop;
+  const marpMode = isMarpDocument(currentSource);
+
+  emptyEl.classList.add("hidden");
+  modeBadge.classList.toggle("hidden", !marpMode);
+  docEl.classList.toggle("hidden", marpMode);
+  slidesEl.classList.toggle("hidden", !marpMode);
+
+  if (marpMode) {
+    const { html, css } = (await getMarp()).render(currentSource);
+    slidesEl.innerHTML = `<style>${css}</style><div class="deck">${html}</div>`;
+    // Marp のカスタム要素 (auto-scaling) 登録と、WebKit の
+    // foreignObject スケーリング不具合へのポリフィルを適用する。
+    // これがないと WKWebView ではスライド内容が原寸のままずれて描画される。
+    const { browser } = await import("@marp-team/marp-core/browser");
+    marpBrowser = marpBrowser ? marpBrowser.update() : browser(slidesEl);
+    // WKWebView は viewBox だけだと高さを正しく取れないことがあるため、
+    // 各スライドの実寸比を viewBox から aspect-ratio として明示する。
+    for (const svg of Array.from(slidesEl.querySelectorAll<SVGSVGElement>("svg[data-marpit-svg]"))) {
+      const vb = svg.viewBox.baseVal;
+      if (vb.width && vb.height) svg.style.aspectRatio = `${vb.width} / ${vb.height}`;
+    }
+  } else {
+    // md ファイル内の生 HTML 経由の XSS (IPC 到達) を防ぐためサニタイズする
+    docEl.innerHTML = DOMPurify.sanitize(md.render(currentSource));
+    rewriteLocalImages(docEl);
+    enhanceCodeBlocks(docEl);
+    const blocks = Array.from(docEl.querySelectorAll<HTMLElement>(".mermaid-block"));
+    if (blocks.length) {
+      try {
+        await (await getMermaid()).run({ nodes: blocks });
+      } catch {
+        // 構文エラーのブロックは mermaid がエラー表示に差し替える
+      }
+    }
+  }
+
+  viewport.scrollTop = scrollTop;
+  updateProgress();
+  viewport.classList.remove("refresh");
+  requestAnimationFrame(() => viewport.classList.add("refresh"));
+}
+
+// コードブロックをラッパーで包み、言語ラベルとコピーボタンを付ける。
+// サニタイズ後に自前で生成する要素なので innerHTML 由来の危険はない。
+function enhanceCodeBlocks(root: HTMLElement) {
+  for (const pre of Array.from(root.querySelectorAll("pre"))) {
+    const code = pre.querySelector("code");
+    const lang = Array.from(code?.classList ?? [])
+      .find((c) => c.startsWith("language-"))
+      ?.slice("language-".length);
+
+    const wrap = document.createElement("div");
+    wrap.className = "code-block";
+    if (lang) wrap.dataset.lang = lang;
+    pre.replaceWith(wrap);
+    wrap.appendChild(pre);
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "code-copy";
+    btn.title = "コードをコピー";
+    btn.textContent = "コピー";
+    btn.addEventListener("click", async () => {
+      try {
+        await copyText(code?.innerText ?? pre.innerText);
+        btn.textContent = "コピーしました";
+        btn.classList.add("done");
+        setTimeout(() => {
+          btn.textContent = "コピー";
+          btn.classList.remove("done");
+        }, 1400);
+      } catch {
+        showToast("コピーできませんでした");
+      }
+    });
+    wrap.appendChild(btn);
+  }
+}
+
+async function copyText(text: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    // WKWebView で Async Clipboard API が使えない場合のフォールバック
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    ta.remove();
+    if (!ok) throw new Error("copy failed");
+  }
+}
+
+// md ファイルからの相対パス画像を asset プロトコル URL に変換する
+function rewriteLocalImages(root: HTMLElement) {
+  if (!currentPath) return;
+  const dir = currentPath.replace(/\/[^/]*$/, "");
+  for (const img of Array.from(root.querySelectorAll("img"))) {
+    const src = img.getAttribute("src") ?? "";
+    if (!src || /^([a-z][a-z0-9+.-]*:|\/\/)/i.test(src)) continue;
+    img.src = convertFileSrc(resolvePath(dir, decodeURIComponent(src)));
+  }
+}
+
+function resolvePath(dir: string, rel: string): string {
+  if (rel.startsWith("/")) return rel;
+  const stack = dir.split("/");
+  for (const seg of rel.split("/")) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") stack.pop();
+    else stack.push(seg);
+  }
+  return stack.join("/");
+}
+
+// ---------- ファイルの読み込みと監視 ----------
+// ファイルを開くときは Rust 側 (open_path) がウィンドウを振り分ける:
+// 既に表示中のウィンドウがあれば前面化、この窓が空ならここで表示、
+// それ以外は新しいウィンドウで開く。
+async function openPath(path: string) {
+  try {
+    const outcome = await invoke<string>("open_path", { path });
+    if (outcome === "load-here") await loadFile(path);
+  } catch (e) {
+    showToast(String(e));
+  }
+}
+
+async function loadFile(path: string) {
+  try {
+    currentSource = await invoke<string>("read_md_file", { path });
+  } catch (e) {
+    showToast(`読み込めませんでした: ${e}`);
+    return;
+  }
+  currentPath = path;
+  const name = path.split("/").pop() ?? path;
+
+  capsule.classList.remove("hidden");
+  btnEdit.classList.remove("hidden");
+  fileNameEl.textContent = name;
+  getCurrentWindow().setTitle(`${name} — Inkfish`);
+  pushRecent(path, name);
+  // 「同じファイルは同じウィンドウ」の台帳に自分を登録する
+  invoke("register_shown_file", { path }).catch(() => {});
+
+  await render();
+  viewport.scrollTop = 0;
+
+  try {
+    await invoke("watch_file", { path });
+    liveDot.dataset.state = "watching";
+  } catch (e) {
+    liveDot.dataset.state = "error";
+    showToast(`変更監視を開始できませんでした: ${e}`);
+  }
+}
+
+async function reload(retry = true) {
+  if (!currentPath) return;
+  try {
+    const src = await invoke<string>("read_md_file", { path: currentPath });
+    // atomic save の途中で空ファイルを読むことがあるため一度だけリトライ
+    if (src === "" && currentSource !== "" && retry) {
+      setTimeout(() => reload(false), 150);
+      return;
+    }
+    if (src === currentSource) return;
+    currentSource = src;
+    liveDot.dataset.state = "watching";
+    await render();
+  } catch {
+    if (retry) setTimeout(() => reload(false), 150);
+    else liveDot.dataset.state = "error";
+  }
+}
+
+listen("md:changed", () => {
+  clearTimeout(reloadTimer);
+  reloadTimer = setTimeout(() => reload(), 60);
+});
+
+// Finder の「このアプリケーションで開く」など、起動後に届いたオープン要求
+listen<string>("md:open", (ev) => {
+  if (ev.payload && ev.payload !== currentPath) loadFile(ev.payload);
+});
+
+// ---------- ファイルを開く ----------
+const MD_EXTS = ["md", "markdown", "mdown", "mdx", "txt"];
+
+async function openFileDialog() {
+  const path = await openDialog({
+    multiple: false,
+    filters: [{ name: "Markdown", extensions: MD_EXTS }],
+  });
+  if (typeof path === "string") openPath(path);
+}
+
+getCurrentWebview().onDragDropEvent((ev) => {
+  if (ev.payload.type === "over") return;
+  document.body.classList.toggle("dropping", ev.payload.type === "enter");
+  if (ev.payload.type === "drop") {
+    const p = ev.payload.paths.find((p) =>
+      MD_EXTS.includes(p.split(".").pop()?.toLowerCase() ?? "")
+    );
+    if (p) openPath(p);
+    else showToast("Markdown ファイルをドロップしてください");
+  }
+});
+
+// ---------- リンク処理 ----------
+document.addEventListener("click", (e) => {
+  const a = (e.target as HTMLElement).closest("a");
+  if (!a) return;
+  const href = a.getAttribute("href") ?? "";
+  if (!href) return;
+  e.preventDefault();
+
+  if (href.startsWith("#")) {
+    const target = document.getElementById(decodeURIComponent(href.slice(1)));
+    target?.scrollIntoView({ behavior: "smooth" });
+  } else if (/^https?:\/\//i.test(href)) {
+    openUrl(href);
+  } else if (currentPath && /\.(md|markdown|mdown|mdx)$/i.test(href)) {
+    // 相対リンクの md ファイルはこのビューアーで開く
+    const dir = currentPath.replace(/\/[^/]*$/, "");
+    openPath(resolvePath(dir, decodeURIComponent(href)));
+  }
+});
+
+// ---------- 外部エディタ ----------
+const DEFAULT_EDITOR_CMD = "open -t {path}";
+const editorCmd = () => localStorage.getItem("editorCmd") || DEFAULT_EDITOR_CMD;
+
+async function openInEditor() {
+  if (!currentPath) return;
+  try {
+    await invoke("open_in_editor", { path: currentPath, command: editorCmd() });
+  } catch (e) {
+    showToast(String(e));
+    toggleSettings(true);
+  }
+}
+
+// ---------- 設定 ----------
+function toggleSettings(show?: boolean) {
+  const willShow = show ?? settingsPop.classList.contains("hidden");
+  settingsPop.classList.toggle("hidden", !willShow);
+  if (willShow) {
+    editorCmdInput.value = editorCmd();
+    editorCmdInput.focus();
+  }
+}
+
+$("settings-save").addEventListener("click", () => {
+  localStorage.setItem("editorCmd", editorCmdInput.value.trim());
+  toggleSettings(false);
+  showToast("エディタ設定を保存しました");
+});
+
+document.addEventListener("mousedown", (e) => {
+  if (
+    !settingsPop.classList.contains("hidden") &&
+    !settingsPop.contains(e.target as Node) &&
+    !(e.target as HTMLElement).closest("#btn-settings")
+  ) {
+    toggleSettings(false);
+  }
+});
+
+// ---------- 最近のファイル ----------
+type Recent = { path: string; name: string };
+
+function recents(): Recent[] {
+  try {
+    return JSON.parse(localStorage.getItem("recents") ?? "[]");
+  } catch {
+    return [];
+  }
+}
+
+function pushRecent(path: string, name: string) {
+  const list = [{ path, name }, ...recents().filter((r) => r.path !== path)].slice(0, 8);
+  localStorage.setItem("recents", JSON.stringify(list));
+}
+
+function renderRecents() {
+  const list = recents();
+  $("recents").classList.toggle("hidden", list.length === 0);
+  $("recent-list").innerHTML = list
+    .map(
+      (r) =>
+        `<li><button data-path="${md.utils.escapeHtml(r.path)}">
+          <span class="r-name">${md.utils.escapeHtml(r.name)}</span>
+          <span class="r-path">${md.utils.escapeHtml(r.path)}</span>
+        </button></li>`
+    )
+    .join("");
+  $("recent-list")
+    .querySelectorAll<HTMLButtonElement>("button[data-path]")
+    .forEach((b) => b.addEventListener("click", () => openPath(b.dataset.path!)));
+}
+
+// ---------- トースト ----------
+let toastTimer: ReturnType<typeof setTimeout> | undefined;
+function showToast(msg: string) {
+  toast.textContent = msg;
+  toast.classList.remove("hidden");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast.classList.add("hidden"), 2800);
+}
+
+// ---------- キーボード / ズーム ----------
+function setScale(v: number) {
+  fontScale = Math.min(1.6, Math.max(0.7, v));
+  document.documentElement.style.setProperty("--scale", String(fontScale));
+}
+
+window.addEventListener("keydown", (e) => {
+  if (!(e.metaKey || e.ctrlKey)) return;
+  switch (e.key) {
+    case "o": e.preventDefault(); openFileDialog(); break;
+    case "e": e.preventDefault(); openInEditor(); break;
+    case "=": case "+": e.preventDefault(); setScale(fontScale + 0.1); break;
+    case "-": e.preventDefault(); setScale(fontScale - 0.1); break;
+    case "0": e.preventDefault(); setScale(1); break;
+  }
+});
+
+// ---------- 読書プログレスバー ----------
+function updateProgress() {
+  const max = viewport.scrollHeight - viewport.clientHeight;
+  document.documentElement.style.setProperty(
+    "--progress",
+    max > 0 ? String(Math.min(1, viewport.scrollTop / max)) : "0"
+  );
+}
+viewport.addEventListener("scroll", updateProgress, { passive: true });
+window.addEventListener("resize", updateProgress);
+
+// ---------- テーマ変更で Mermaid を再描画 ----------
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+  initMermaid();
+  if (currentPath) render();
+});
+
+// ---------- イベント配線と起動 ----------
+$("btn-open").addEventListener("click", openFileDialog);
+$("empty-open").addEventListener("click", openFileDialog);
+$("btn-edit").addEventListener("click", openInEditor);
+$("btn-settings").addEventListener("click", () => toggleSettings());
+
+(async () => {
+  renderRecents();
+  const startupFile = await invoke<string | null>("get_startup_file");
+  if (startupFile) loadFile(startupFile);
+})();

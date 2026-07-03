@@ -1,0 +1,332 @@
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
+
+/// ウィンドウごとのアクティブな watcher (label -> watcher)。
+/// 同じウィンドウが別ファイルを監視すると古い watcher は drop され解除される。
+#[derive(Default)]
+struct WatchState(Mutex<HashMap<String, RecommendedWatcher>>);
+
+/// 各ウィンドウが現在表示しているファイル (label -> canonical path)。
+/// 「同じファイルは同じウィンドウ」を保証するための台帳。
+#[derive(Default)]
+struct ShownFiles(Mutex<HashMap<String, PathBuf>>);
+
+/// ウィンドウが起動時に開くべきファイル (label -> path)。
+/// WebView の JS が立ち上がる前に届いた分をここに保持し、
+/// フロントエンドが get_startup_file で取り出す。
+#[derive(Default)]
+struct PendingOpen(Mutex<HashMap<String, String>>);
+
+/// 追加ウィンドウのラベル採番用
+static WINDOW_SEQ: AtomicUsize = AtomicUsize::new(1);
+
+#[tauri::command]
+fn read_md_file(path: String) -> Result<String, String> {
+    std::fs::read_to_string(&path).map_err(|e| e.to_string())
+}
+
+/// エディタの atomic save (rename で差し替え) を拾うため、
+/// ファイル自体ではなく親ディレクトリを監視して対象パスだけ通知する。
+/// 通知は監視を要求したウィンドウにだけ届く。
+#[tauri::command]
+fn watch_file(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    state: State<'_, WatchState>,
+    path: String,
+) -> Result<(), String> {
+    let target = PathBuf::from(&path)
+        .canonicalize()
+        .map_err(|e| e.to_string())?;
+    let dir = target
+        .parent()
+        .ok_or("親ディレクトリが見つかりません")?
+        .to_path_buf();
+
+    let label = window.label().to_string();
+    let emit_label = label.clone();
+    let watched = target.clone();
+    let mut watcher =
+        notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+            if let Ok(event) = res {
+                use notify::EventKind::*;
+                if matches!(event.kind, Create(_) | Modify(_) | Remove(_))
+                    && event.paths.iter().any(|p| p == &watched)
+                {
+                    let _ = app.emit_to(emit_label.as_str(), "md:changed", ());
+                }
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    watcher
+        .watch(&dir, RecursiveMode::NonRecursive)
+        .map_err(|e| e.to_string())?;
+
+    state.0.lock().unwrap().insert(label, watcher);
+    Ok(())
+}
+
+/// ファイルの表示に成功したウィンドウが自分の表示中ファイルを登録する。
+#[tauri::command]
+fn register_shown_file(window: tauri::WebviewWindow, path: String) {
+    let app = window.app_handle();
+    let canon = PathBuf::from(&path)
+        .canonicalize()
+        .unwrap_or_else(|_| PathBuf::from(&path));
+    app.state::<ShownFiles>()
+        .0
+        .lock()
+        .unwrap()
+        .insert(window.label().to_string(), canon);
+    app.state::<PendingOpen>()
+        .0
+        .lock()
+        .unwrap()
+        .remove(window.label());
+}
+
+/// ファイルを開くときの共通ルール:
+/// - どこかのウィンドウが表示中 → そのウィンドウを前面化 ("focused")
+/// - 呼び出し元がまだ何も表示していない → その場で表示させる ("load-here")
+/// - それ以外 → 新しいウィンドウで開く ("new-window")
+///
+/// ウィンドウ生成はメインスレッドへのディスパッチを伴うため、
+/// デッドロックを避けて async コマンドにしている。
+#[tauri::command]
+async fn open_path(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    path: String,
+) -> Result<String, String> {
+    let canon = PathBuf::from(&path)
+        .canonicalize()
+        .map_err(|e| format!("ファイルが見つかりません: {e}"))?;
+
+    let existing = {
+        let shown = app.state::<ShownFiles>();
+        let map = shown.0.lock().unwrap();
+        map.iter()
+            .find(|(_, p)| **p == canon)
+            .map(|(l, _)| l.clone())
+    };
+    if let Some(label) = existing {
+        if label != window.label() {
+            focus_window(&app, &label);
+        }
+        return Ok("focused".into());
+    }
+
+    let caller_is_empty = !app
+        .state::<ShownFiles>()
+        .0
+        .lock()
+        .unwrap()
+        .contains_key(window.label());
+    if caller_is_empty {
+        return Ok("load-here".into());
+    }
+
+    spawn_viewer_window(&app, canon.to_string_lossy().into_owned())?;
+    Ok("new-window".into())
+}
+
+/// 起動時に開くべきファイルを返す。
+/// PendingOpen (Finder 経由 / 新規ウィンドウの割り当て) を優先し、
+/// main ウィンドウのみ CLI 引数 (argv[1]) にフォールバックする。
+#[tauri::command]
+fn get_startup_file(
+    window: tauri::WebviewWindow,
+    pending: State<'_, PendingOpen>,
+) -> Option<String> {
+    if let Some(p) = pending.0.lock().unwrap().remove(window.label()) {
+        return Some(p);
+    }
+    if window.label() == "main" {
+        let arg = std::env::args().nth(1)?;
+        let p = PathBuf::from(arg).canonicalize().ok()?;
+        return p.is_file().then(|| p.to_string_lossy().into_owned());
+    }
+    None
+}
+
+/// 設定されたコマンドで外部エディタを起動する。
+/// コマンド中の {path} を置換、なければ末尾に引数として渡す。
+#[tauri::command]
+fn open_in_editor(path: String, command: String) -> Result<(), String> {
+    let parts = shell_words::split(command.trim()).map_err(|e| e.to_string())?;
+    let Some((program, rest)) = parts.split_first() else {
+        return Err("エディタコマンドが設定されていません".into());
+    };
+
+    let mut args: Vec<String> = rest.to_vec();
+    let mut replaced = false;
+    for a in args.iter_mut() {
+        if a.contains("{path}") {
+            *a = a.replace("{path}", &path);
+            replaced = true;
+        }
+    }
+    if !replaced {
+        args.push(path);
+    }
+
+    std::process::Command::new(program)
+        .args(&args)
+        .spawn()
+        .map_err(|e| format!("エディタの起動に失敗しました: {e}"))?;
+    Ok(())
+}
+
+fn focus_window(app: &AppHandle, label: &str) {
+    if let Some(w) = app.webview_windows().get(label) {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+}
+
+/// 指定ファイルを開く新しいビューアウィンドウを作る。
+/// パスは PendingOpen に積み、フロントエンドが起動時に取り出す。
+fn spawn_viewer_window(app: &AppHandle, path: String) -> Result<(), String> {
+    let label = format!("viewer-{}", WINDOW_SEQ.fetch_add(1, Ordering::Relaxed));
+    app.state::<PendingOpen>()
+        .0
+        .lock()
+        .unwrap()
+        .insert(label.clone(), path);
+
+    let mut builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("index.html".into()))
+        .title("Inkfish")
+        .inner_size(1100.0, 840.0)
+        .min_inner_size(520.0, 400.0);
+
+    // 既存の前面ウィンドウと完全に重ならないよう、少しずらして出す (カスケード)
+    if let Some(origin) = app.webview_windows().values().find_map(|w| {
+        if !w.is_focused().unwrap_or(false) {
+            return None;
+        }
+        let pos = w.outer_position().ok()?;
+        let scale = w.scale_factor().ok()?;
+        Some((pos.x as f64 / scale, pos.y as f64 / scale))
+    }) {
+        builder = builder.position(origin.0 + 28.0, origin.1 + 28.0);
+    }
+
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .hidden_title(true);
+
+    builder.build().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Finder / Dock 経由で届いたオープン要求を適切なウィンドウに振り分ける。
+fn open_from_system(app: &AppHandle, path: PathBuf) {
+    let shown_map: HashMap<String, PathBuf> =
+        app.state::<ShownFiles>().0.lock().unwrap().clone();
+
+    // 既に表示しているウィンドウがあれば前面化するだけ
+    if let Some((label, _)) = shown_map.iter().find(|(_, p)| **p == path) {
+        focus_window(app, label);
+        return;
+    }
+
+    let path_str = path.to_string_lossy().into_owned();
+
+    // 起動直後は main ウィンドウ生成前に Apple Event が届くことがある。
+    // その場合はこれから作られる main 用に積んでおく。
+    let windows = app.webview_windows();
+    if windows.is_empty() {
+        app.state::<PendingOpen>()
+            .0
+            .lock()
+            .unwrap()
+            .insert("main".into(), path_str);
+        return;
+    }
+
+    // まだ何も表示していないウィンドウ(起動直後など)があればそこで開く
+    let empty = windows
+        .keys()
+        .find(|l| !shown_map.contains_key(*l))
+        .cloned();
+    if let Some(label) = empty {
+        // JS 起動前なら get_startup_file、起動後なら md:open のどちらかで拾われる
+        app.state::<PendingOpen>()
+            .0
+            .lock()
+            .unwrap()
+            .insert(label.clone(), path_str.clone());
+        let _ = app.emit_to(label.as_str(), "md:open", path_str);
+        focus_window(app, &label);
+    } else {
+        let _ = spawn_viewer_window(app, path_str);
+    }
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    let app = tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
+        .manage(WatchState::default())
+        .manage(ShownFiles::default())
+        .manage(PendingOpen::default())
+        .invoke_handler(tauri::generate_handler![
+            read_md_file,
+            watch_file,
+            open_in_editor,
+            open_path,
+            register_shown_file,
+            get_startup_file
+        ])
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|app_handle, event| match event {
+        // macOS では Finder からのオープンは argv ではなく Apple Event で届く。
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        tauri::RunEvent::Opened { urls } => {
+            for path in urls
+                .iter()
+                .filter_map(|u| u.to_file_path().ok())
+                .filter_map(|p| p.canonicalize().ok())
+                .filter(|p| p.is_file())
+            {
+                open_from_system(app_handle, path);
+            }
+        }
+        // 閉じたウィンドウの台帳と watcher を掃除する
+        tauri::RunEvent::WindowEvent {
+            label,
+            event: tauri::WindowEvent::Destroyed,
+            ..
+        } => {
+            app_handle
+                .state::<ShownFiles>()
+                .0
+                .lock()
+                .unwrap()
+                .remove(&label);
+            app_handle
+                .state::<WatchState>()
+                .0
+                .lock()
+                .unwrap()
+                .remove(&label);
+            app_handle
+                .state::<PendingOpen>()
+                .0
+                .lock()
+                .unwrap()
+                .remove(&label);
+        }
+        _ => {}
+    });
+}
