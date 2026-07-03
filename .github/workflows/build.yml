@@ -2,6 +2,7 @@ name: build
 
 on:
   push:
+    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
 
@@ -44,11 +45,14 @@ jobs:
 
       - run: npm ci
 
-      # タグ push のときは Release を作成、手動実行のときはビルドのみ
+      # タグ push はそのタグ名で、main への push / 手動実行は
+      # tauri.conf.json の version から "v{version}" のリリースを作成する。
+      # 同じバージョンのまま main に push した場合は既存リリースの
+      # アセットが差し替えられ、バージョンを上げると新しいリリースになる。
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
-          releaseName: ${{ github.ref_type == 'tag' && format('Inkfish {0}', github.ref_name) || '' }}
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'v__VERSION__' }}
+          releaseName: ${{ github.ref_type == 'tag' && format('Inkfish {0}', github.ref_name) || 'Inkfish v__VERSION__' }}
           args: ${{ matrix.args }}
