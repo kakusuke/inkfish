@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 /// ウィンドウごとのアクティブな watcher (label -> watcher)。
@@ -182,6 +183,123 @@ fn open_in_editor(path: String, command: String) -> Result<(), String> {
     Ok(())
 }
 
+/// アプリのメニューバーを組み立てる。
+/// File メニューに「開く」「PDF で書き出す」を追加し、
+/// 選択時はフロントエンドにイベントを送って処理させる。
+fn build_menu<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+) -> Result<tauri::menu::Menu<R>, tauri::Error> {
+    let open = MenuItemBuilder::with_id("open", "開く…")
+        .accelerator("CmdOrCtrl+O")
+        .build(app)?;
+    let export_pdf = MenuItemBuilder::with_id("export_pdf", "PDF で書き出す…")
+        .accelerator("CmdOrCtrl+Shift+E")
+        .build(app)?;
+
+    let file_menu = SubmenuBuilder::new(app, "ファイル")
+        .item(&open)
+        .item(&export_pdf)
+        .separator()
+        .close_window()
+        .build()?;
+
+    let edit_menu = SubmenuBuilder::new(app, "編集")
+        .undo()
+        .redo()
+        .separator()
+        .cut()
+        .copy()
+        .paste()
+        .select_all()
+        .build()?;
+
+    let window_menu = SubmenuBuilder::new(app, "ウインドウ")
+        .minimize()
+        .separator()
+        .fullscreen()
+        .build()?;
+
+    let mut menu = MenuBuilder::new(app);
+
+    // macOS のアプリメニュー(Inkfish について / 隠す / 終了 など)
+    #[cfg(target_os = "macos")]
+    {
+        let app_menu = SubmenuBuilder::new(app, "Inkfish")
+            .about(None)
+            .separator()
+            .services()
+            .separator()
+            .hide()
+            .hide_others()
+            .show_all()
+            .separator()
+            .quit()
+            .build()?;
+        menu = menu.item(&app_menu);
+    }
+
+    menu.item(&file_menu)
+        .item(&edit_menu)
+        .item(&window_menu)
+        .build()
+}
+
+/// メニュー操作を、現在前面にあるウィンドウのフロントエンドへ届ける。
+fn emit_to_focused(app: &AppHandle, event: &str) {
+    let target = app
+        .webview_windows()
+        .into_iter()
+        .find(|(_, w)| w.is_focused().unwrap_or(false))
+        .map(|(label, _)| label);
+    if let Some(label) = target {
+        let _ = app.emit_to(label.as_str(), event, ());
+    }
+}
+
+/// 表示中のドキュメントを PDF として書き出す (macOS)。
+/// WKWebView.createPDF でページ全体を PDF 化し、指定パスへ書き込む。
+/// createPDF は非同期(完了ブロック)なので、メインスレッドで発行だけ行い、
+/// 結果はチャネル経由で受け取る(コマンド自体は別スレッドで待機する)。
+#[cfg(target_os = "macos")]
+#[tauri::command]
+async fn export_pdf(window: tauri::WebviewWindow, dest: String) -> Result<(), String> {
+    use block2::RcBlock;
+    use objc2_foundation::{NSData, NSError, NSString};
+    use objc2_web_kit::WKWebView;
+
+    let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
+    window
+        .with_webview(move |platform| {
+            // このクロージャはメインスレッドで実行される。
+            let webview = platform.inner() as *mut WKWebView;
+            let handler = RcBlock::new(move |data: *mut NSData, err: *mut NSError| {
+                let result = unsafe {
+                    if !err.is_null() {
+                        Err(format!("PDF の生成に失敗しました: {}", (*err).localizedDescription()))
+                    } else if data.is_null() {
+                        Err("PDF データを取得できませんでした".into())
+                    } else if (*data).writeToFile_atomically(&NSString::from_str(&dest), true) {
+                        Ok(())
+                    } else {
+                        Err("PDF を書き込めませんでした".into())
+                    }
+                };
+                let _ = tx.send(result);
+            });
+            // 設定 nil でページ全体をキャプチャする
+            unsafe { (*webview).createPDFWithConfiguration_completionHandler(None, &handler) };
+        })
+        .map_err(|e| e.to_string())?;
+
+    rx.recv().map_err(|e| e.to_string())?
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+async fn export_pdf(_window: tauri::WebviewWindow, _dest: String) -> Result<(), String> {
+    Err("PDF 書き出しは macOS でのみ対応しています".into())
+}
+
 fn focus_window(app: &AppHandle, label: &str) {
     if let Some(w) = app.webview_windows().get(label) {
         let _ = w.show();
@@ -278,13 +396,20 @@ pub fn run() {
         .manage(WatchState::default())
         .manage(ShownFiles::default())
         .manage(PendingOpen::default())
+        .menu(|handle| build_menu(handle))
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "open" => emit_to_focused(app, "menu:open"),
+            "export_pdf" => emit_to_focused(app, "menu:export-pdf"),
+            _ => {}
+        })
         .invoke_handler(tauri::generate_handler![
             read_md_file,
             watch_file,
             open_in_editor,
             open_path,
             register_shown_file,
-            get_startup_file
+            get_startup_file,
+            export_pdf
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

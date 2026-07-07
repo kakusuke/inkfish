@@ -2,7 +2,7 @@ import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import MarkdownIt from "markdown-it";
 import anchor from "markdown-it-anchor";
@@ -303,6 +303,10 @@ listen<string>("md:open", (ev) => {
   if (ev.payload && ev.payload !== currentPath) loadFile(ev.payload);
 });
 
+// ネイティブメニュー (File) からの操作
+listen("menu:open", () => openFileDialog());
+listen("menu:export-pdf", () => exportPdf());
+
 // ---------- ファイルを開く ----------
 const MD_EXTS = ["md", "markdown", "mdown", "mdx", "txt"];
 
@@ -312,6 +316,36 @@ async function openFileDialog() {
     filters: [{ name: "Markdown", extensions: MD_EXTS }],
   });
   if (typeof path === "string") openPath(path);
+}
+
+// ---------- PDF 書き出し ----------
+// 保存先を選ばせて、Rust 側 (WKWebView.printOperation) で直接 PDF を書き出す。
+// 印刷メディアでレンダリングされるので @media print のスタイルが効き、
+// ツールバー等のクロームは含まれない。
+async function exportPdf() {
+  if (!currentPath) {
+    showToast("先に Markdown ファイルを開いてください");
+    return;
+  }
+  const base = (currentPath.split("/").pop() ?? "document").replace(/\.[^.]+$/, "");
+  const dest = await saveDialog({
+    defaultPath: `${base}.pdf`,
+    filters: [{ name: "PDF", extensions: ["pdf"] }],
+  });
+  if (!dest) return;
+  closeFind();
+  // createPDF は画面メディアで描画するので、書き出しの間だけツールバー等の
+  // クロームを隠し、本文が全高でレイアウトされるようにする。
+  document.body.classList.add("exporting");
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  try {
+    await invoke("export_pdf", { dest });
+    showToast("PDF を書き出しました");
+  } catch (e) {
+    showToast(`PDF の書き出しに失敗しました: ${e}`);
+  } finally {
+    document.body.classList.remove("exporting");
+  }
 }
 
 getCurrentWebview().onDragDropEvent((ev) => {

@@ -869,3 +869,64 @@ body.dropping #viewport {
     animation: none;
   }
 }
+
+/* ============================================================
+   PDF 書き出し (WKWebView.createPDF は画面メディアで描画するため、
+   @media print ではなく body.exporting クラスで見た目を切り替える)
+   本文だけを1枚に流す。ダークテーマでもライトのトークンに固定し、
+   ツールバーなどのクロームやコピーボタンは隠す。
+   ============================================================ */
+body.exporting {
+  /* トークンをライトに固定(ダークテーマでも読める PDF にする) */
+  --bg: #ffffff;
+  --surface: #ffffff;
+  --ink: #1b242c;
+  --ink-2: #64707b;
+  --line: #e1e7ea;
+  --accent: #0e7c6b;
+  --accent-soft: rgba(14, 124, 107, 0.1);
+  --code-bg: #edf1f3;
+  --shadow: none;
+  --scale: 1;
+
+  --hl-kw: #cf222e;
+  --hl-str: #0a3069;
+  --hl-fn: #8250df;
+  --hl-num: #0550ae;
+  --hl-cm: #6e7781;
+  --hl-attr: #116329;
+
+  height: auto;
+  overflow: visible;
+  background: #ffffff;
+}
+
+body.exporting #toolbar,
+body.exporting #progress,
+body.exporting #find-bar,
+body.exporting #settings-pop,
+body.exporting #toast,
+body.exporting .code-copy {
+  display: none !important;
+}
+
+body.exporting #viewport {
+  height: auto;
+  overflow: visible;
+  padding-top: 0;
+  scrollbar-gutter: auto;
+}
+
+body.exporting #viewport.refresh #doc,
+body.exporting #viewport.refresh .deck {
+  animation: none;
+}
+
+/* 紙面ではカード装飾を外し、本文を幅いっぱいに流す */
+body.exporting .markdown-body {
+  width: 100%;
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
