@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "GFM / Mermaid / Marp 対応の軽量 Markdown ビューアー"
 authors = ["kakusuke"]
 edition = "2021"
+license = "MIT"
 
 [lib]
 name = "inkfish_lib"
