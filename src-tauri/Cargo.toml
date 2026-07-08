@@ -1,6 +1,6 @@
 [package]
 name = "inkfish"
-version = "0.1.0"
+version = "0.1.1"
 description = "GFM / Mermaid / Marp 対応の軽量 Markdown ビューアー"
 authors = ["kakusuke"]
 edition = "2021"
