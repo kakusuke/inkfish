@@ -155,6 +155,24 @@ fn get_startup_file(
     None
 }
 
+/// ログインシェルの PATH を取得する。
+/// Dock/Finder から起動した .app の PATH は最小限 (`/usr/bin:/bin` 程度) で、
+/// Homebrew などの `/opt/homebrew/bin`・`/usr/local/bin` が含まれない。
+/// ターミナルと同じ解決をするため、ログインシェルに PATH を問い合わせる。
+#[cfg(unix)]
+fn login_shell_path() -> Option<String> {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+    let out = std::process::Command::new(&shell)
+        .args(["-lc", "printf %s \"$PATH\""])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!path.is_empty()).then_some(path)
+}
+
 /// 設定されたコマンドで外部エディタを起動する。
 /// コマンド中の {path} を置換、なければ末尾に引数として渡す。
 #[tauri::command]
@@ -176,11 +194,35 @@ fn open_in_editor(path: String, command: String) -> Result<(), String> {
         args.push(path);
     }
 
-    std::process::Command::new(program)
-        .args(&args)
+    // GUI 起動時 (Dock/Finder) の PATH は最小限で vimr/code などが見つからない。
+    // ログインシェルの PATH を取得し、エディタ本体を絶対パスに解決してから起動する。
+    let mut cmd = std::process::Command::new(program);
+    #[cfg(unix)]
+    if let Some(path_env) = login_shell_path() {
+        if let Some(resolved) = resolve_program(program, &path_env) {
+            cmd = std::process::Command::new(resolved);
+        }
+        cmd.env("PATH", path_env);
+    }
+    cmd.args(&args)
         .spawn()
         .map_err(|e| format!("エディタの起動に失敗しました: {e}"))?;
     Ok(())
+}
+
+/// プログラム名を PATH 上で絶対パスに解決する。
+/// スラッシュを含む (絶対/相対パス指定) 場合や、見つからない場合は None を返し、
+/// 呼び出し側の既定の解決に委ねる。
+#[cfg(unix)]
+fn resolve_program(program: &str, path_env: &str) -> Option<PathBuf> {
+    if program.contains('/') {
+        return None;
+    }
+    path_env
+        .split(':')
+        .filter(|d| !d.is_empty())
+        .map(|dir| PathBuf::from(dir).join(program))
+        .find(|candidate| candidate.is_file())
 }
 
 /// アプリのメニューバーを組み立てる。
