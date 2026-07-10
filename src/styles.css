@@ -859,6 +859,30 @@ body.dropping #viewport {
   box-shadow: var(--shadow);
 }
 
+/* リンクのホバー時に URL を左下に表示(ブラウザのステータスバー風) */
+#link-status {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  z-index: 25;
+  max-width: 60vw;
+  padding: 4px 12px 5px;
+  font-family: var(--sans);
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--ink-2);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: none;
+  border-bottom: none;
+  border-top-right-radius: 8px;
+  box-shadow: var(--shadow);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
 /* ============================================================
    その他
    ============================================================ */
@@ -906,6 +930,7 @@ body.exporting #progress,
 body.exporting #find-bar,
 body.exporting #settings-pop,
 body.exporting #toast,
+body.exporting #link-status,
 body.exporting .code-copy {
   display: none !important;
 }

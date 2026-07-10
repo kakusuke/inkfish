@@ -2,8 +2,8 @@ import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { open as openDialog, save as saveDialog, confirm } from "@tauri-apps/plugin-dialog";
+import { openUrl, openPath as openExternal } from "@tauri-apps/plugin-opener";
 import MarkdownIt from "markdown-it";
 import anchor from "markdown-it-anchor";
 import taskLists from "markdown-it-task-lists";
@@ -28,6 +28,7 @@ const btnEdit = $<HTMLButtonElement>("btn-edit");
 const settingsPop = $<HTMLElement>("settings-pop");
 const editorCmdInput = $<HTMLInputElement>("editor-cmd");
 const toast = $<HTMLElement>("toast");
+const linkStatus = $<HTMLElement>("link-status");
 const findBar = $<HTMLElement>("find-bar");
 const findInput = $<HTMLInputElement>("find-input");
 const findCount = $<HTMLElement>("find-count");
@@ -58,6 +59,11 @@ const md: MarkdownIt = new MarkdownIt({
   .use(anchor, { tabIndex: false })
   .use(taskLists, { label: true })
   .use(footnote);
+
+// 生テキストの `hoge.md` などが ccTLD 衝突で http:// を補完されるのを防ぐ。
+// スキームなしはローカルファイルアクセスとして扱いたいため、裸テキストの
+// 自動リンク化(fuzzyLink)は無効化する(https:// 等の明示 URL は従来どおり)。
+md.linkify.set({ fuzzyLink: false });
 
 // ```mermaid ブロックはハイライトせず mermaid 用のコンテナにする
 const defaultFence = md.renderer.rules.fence!;
@@ -360,23 +366,79 @@ getCurrentWebview().onDragDropEvent((ev) => {
   }
 });
 
+// ---------- リンクのホバー表示(左下ステータスバー) ----------
+document.addEventListener("mouseover", (e) => {
+  const a = (e.target as HTMLElement).closest("a");
+  const href = a?.getAttribute("href");
+  if (!href) {
+    linkStatus.classList.add("hidden");
+    return;
+  }
+  // 表示は読みやすいようデコード(不正な % 列は生のまま)
+  let text = href;
+  try {
+    text = decodeURIComponent(href);
+  } catch {
+    /* keep raw */
+  }
+  linkStatus.textContent = text;
+  linkStatus.classList.remove("hidden");
+});
+
 // ---------- リンク処理 ----------
-document.addEventListener("click", (e) => {
+document.addEventListener("click", async (e) => {
   const a = (e.target as HTMLElement).closest("a");
   if (!a) return;
   const href = a.getAttribute("href") ?? "";
   if (!href) return;
   e.preventDefault();
 
+  // ページ内アンカー
   if (href.startsWith("#")) {
-    const target = document.getElementById(decodeURIComponent(href.slice(1)));
+    // markdown-it-anchor の id は encodeURIComponent 済み文字列そのもの。
+    // まず生の値で引き、無ければデコードした値でも引く(手書き id 対策)。
+    const rawId = href.slice(1);
+    let target = document.getElementById(rawId);
+    if (!target) {
+      try {
+        target = document.getElementById(decodeURIComponent(rawId));
+      } catch {
+        /* 不正な % シーケンスは無視 */
+      }
+    }
     target?.scrollIntoView({ behavior: "smooth" });
-  } else if (/^https?:\/\//i.test(href)) {
+    return;
+  }
+
+  // スキームがあるもの (http(s):// / mailto: / tel: など) は外部で開く
+  if (/^[a-z][a-z0-9+.-]*:/i.test(href)) {
     openUrl(href);
-  } else if (currentPath && /\.(md|markdown|mdown|mdx)$/i.test(href)) {
+    return;
+  }
+
+  // ここから下はスキームなし = ローカルファイルアクセスとして扱う
+  if (!currentPath) return;
+  const dir = currentPath.replace(/\/[^/]*$/, "");
+  const path = resolvePath(dir, decodeURIComponent(href));
+
+  if (/\.(md|markdown|mdown|mdx)$/i.test(path)) {
     // 相対リンクの md ファイルはこのビューアーで開く
-    const dir = currentPath.replace(/\/[^/]*$/, "");
-    openPath(resolvePath(dir, decodeURIComponent(href)));
+    openPath(path);
+    return;
+  }
+
+  // md 以外のローカルファイルは OS 既定アプリで開く (毎回確認)
+  const ok = await confirm(`外部アプリで開きます:\n${path}`, {
+    title: "外部アプリで開く",
+    kind: "warning",
+    okLabel: "開く",
+    cancelLabel: "キャンセル",
+  });
+  if (!ok) return;
+  try {
+    await openExternal(path);
+  } catch (err) {
+    showToast(`開けませんでした: ${err}`);
   }
 });
 
