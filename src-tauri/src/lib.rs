@@ -261,6 +261,8 @@ fn build_menu<R: tauri::Runtime>(
         .fullscreen()
         .build()?;
 
+    // menu の再代入は macOS のアプリメニュー追加時のみ(他 OS では mut 不要)
+    #[allow(unused_mut)]
     let mut menu = MenuBuilder::new(app);
 
     // macOS のアプリメニュー(Inkfish について / 隠す / 終了 など)
@@ -355,14 +357,13 @@ async fn export_pdf(window: tauri::WebviewWindow, dest: String) -> Result<(), St
                 let webview = unsafe { controller.CoreWebView2()? };
                 let webview7: ICoreWebView2_7 = webview.cast()?;
                 let handler_tx = tx.clone();
+                // webview2-com は HRESULT/BOOL を Result<(), Error> と bool に変換して渡す
                 let handler = PrintToPdfCompletedHandler::create(Box::new(
-                    move |errcode, is_successful| {
-                        let result = if errcode.is_ok() && is_successful.as_bool() {
-                            Ok(())
-                        } else if errcode.is_err() {
-                            Err(format!("PDF の生成に失敗しました: {}", errcode.message()))
-                        } else {
-                            Err("PDF を書き込めませんでした".into())
+                    move |errcode: windows::core::Result<()>, is_successful| {
+                        let result = match errcode {
+                            Ok(()) if is_successful => Ok(()),
+                            Ok(()) => Err("PDF を書き込めませんでした".to_string()),
+                            Err(e) => Err(format!("PDF の生成に失敗しました: {}", e.message())),
                         };
                         let _ = handler_tx.send(result);
                         Ok(())
