@@ -628,6 +628,102 @@ body.dropping #viewport {
   max-width: 100%;
 }
 
+/* 図はクリックで拡大表示できる(エラー差し替え表示は除く) */
+.mermaid-block:not(:has(.error-icon)) {
+  cursor: zoom-in;
+}
+
+/* --- Mermaid ライトボックス --- */
+#mermaid-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(0, 0, 0, 0.82);
+  backdrop-filter: blur(2px);
+  animation: mlb-fade 0.12s ease-out;
+}
+
+#mermaid-lightbox.hidden {
+  display: none;
+}
+
+@keyframes mlb-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+#mlb-stage {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+}
+
+#mlb-stage.grabbing {
+  cursor: grabbing;
+}
+
+#mlb-content {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+/* 拡大表示中は原寸で描く(本文用の max-width 制約を打ち消す) */
+#mlb-content svg {
+  max-width: none;
+  display: block;
+}
+
+#mlb-bar {
+  position: absolute;
+  bottom: 22px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 7px;
+  border-radius: 12px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+}
+
+.mlb-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  height: 30px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.mlb-btn:hover {
+  background: var(--line);
+}
+
+.mlb-text {
+  font-size: 0.82em;
+}
+
+#mlb-level {
+  min-width: 46px;
+  text-align: center;
+  font-size: 0.82em;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+  user-select: none;
+}
+
 /* --- syntax highlight --- */
 .hljs-keyword, .hljs-selector-tag, .hljs-meta .hljs-keyword, .hljs-doctag { color: var(--hl-kw); }
 .hljs-string, .hljs-regexp, .hljs-meta-string { color: var(--hl-str); }

@@ -79,6 +79,24 @@
       <div id="slides" class="hidden"></div>
     </main>
 
+    <!-- Mermaid 図の拡大表示ライトボックス -->
+    <div id="mermaid-lightbox" class="hidden" aria-hidden="true">
+      <div id="mlb-stage"><div id="mlb-content"></div></div>
+      <div id="mlb-bar">
+        <button id="mlb-zoom-out" class="mlb-btn" title="縮小 (−)">
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3.5 8h9"/></svg>
+        </button>
+        <span id="mlb-level">100%</span>
+        <button id="mlb-zoom-in" class="mlb-btn" title="拡大 (+)">
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg>
+        </button>
+        <button id="mlb-reset" class="mlb-btn mlb-text" title="全体表示に戻す (0)">リセット</button>
+        <button id="mlb-close" class="mlb-btn" title="閉じる (Esc)">
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+        </button>
+      </div>
+    </div>
+
     <div id="toast" class="hidden"></div>
     <div id="link-status" class="hidden" aria-hidden="true"></div>
   </body>

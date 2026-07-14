@@ -32,6 +32,10 @@ const linkStatus = $<HTMLElement>("link-status");
 const findBar = $<HTMLElement>("find-bar");
 const findInput = $<HTMLInputElement>("find-input");
 const findCount = $<HTMLElement>("find-count");
+const lightbox = $<HTMLElement>("mermaid-lightbox");
+const mlbStage = $<HTMLElement>("mlb-stage");
+const mlbContent = $<HTMLElement>("mlb-content");
+const mlbLevel = $<HTMLElement>("mlb-level");
 
 // ---------- 状態 ----------
 let currentPath: string | null = null;
@@ -150,6 +154,13 @@ async function render() {
         await (await getMermaid()).run({ nodes: blocks });
       } catch {
         // 構文エラーのブロックは mermaid がエラー表示に差し替える
+      }
+      // 各図をクリックでライトボックス拡大表示にする
+      for (const block of blocks) {
+        const svg = block.querySelector<SVGSVGElement>("svg");
+        // 構文エラーの差し替え表示 (.error-icon を含む) は拡大対象外
+        if (!svg || svg.querySelector(".error-icon")) continue;
+        block.addEventListener("click", () => openLightbox(svg));
       }
     }
   }
@@ -694,6 +705,160 @@ matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
   initMermaid();
   if (currentPath) render();
 });
+
+// ---------- Mermaid ライトボックス ----------
+// 図をクリックすると全画面オーバーレイで開き、ホイール拡大縮小 /
+// ドラッグ(グラブ)移動 / Shift+ホイールで横移動ができる。
+let mlbScale = 1;
+let mlbTx = 0;
+let mlbTy = 0;
+let mlbMinScale = 0.1;
+let mlbMaxScale = 16;
+let mlbNatW = 0;
+let mlbNatH = 0;
+
+function mlbApply() {
+  mlbContent.style.transform = `translate(${mlbTx}px, ${mlbTy}px) scale(${mlbScale})`;
+  // 表示倍率は原寸(SVG の viewBox)を 100% とした値
+  mlbLevel.textContent = `${Math.round(mlbScale * 100)}%`;
+}
+
+// stage 上の点 (cx, cy) を固定したまま倍率を factor 倍する
+function mlbZoomAt(factor: number, cx: number, cy: number) {
+  const next = Math.min(mlbMaxScale, Math.max(mlbMinScale, mlbScale * factor));
+  if (next === mlbScale) return;
+  const localX = (cx - mlbTx) / mlbScale;
+  const localY = (cy - mlbTy) / mlbScale;
+  mlbTx = cx - localX * next;
+  mlbTy = cy - localY * next;
+  mlbScale = next;
+  mlbApply();
+}
+
+function mlbZoomCenter(factor: number) {
+  const r = mlbStage.getBoundingClientRect();
+  mlbZoomAt(factor, r.width / 2, r.height / 2);
+}
+
+// 図全体が収まる倍率で中央に配置(小さい図は拡大、大きい図は縮小される)
+function mlbFit() {
+  const r = mlbStage.getBoundingClientRect();
+  const margin = 0.92;
+  const fit = Math.min((r.width * margin) / mlbNatW, (r.height * margin) / mlbNatH);
+  mlbScale = fit || 1;
+  mlbMinScale = mlbScale / 4;
+  mlbMaxScale = mlbScale * 16;
+  mlbTx = (r.width - mlbNatW * mlbScale) / 2;
+  mlbTy = (r.height - mlbNatH * mlbScale) / 2;
+  mlbApply();
+}
+
+function openLightbox(svg: SVGSVGElement) {
+  const vb = svg.viewBox.baseVal;
+  const rect = svg.getBoundingClientRect();
+  mlbNatW = vb.width || rect.width || 100;
+  mlbNatH = vb.height || rect.height || 100;
+
+  const clone = svg.cloneNode(true) as SVGSVGElement;
+  clone.style.width = `${mlbNatW}px`;
+  clone.style.height = `${mlbNatH}px`;
+  mlbContent.replaceChildren(clone);
+
+  lightbox.classList.remove("hidden");
+  lightbox.setAttribute("aria-hidden", "false");
+  mlbFit();
+}
+
+function closeLightbox() {
+  lightbox.classList.add("hidden");
+  lightbox.setAttribute("aria-hidden", "true");
+  mlbContent.replaceChildren();
+}
+
+const isLightboxOpen = () => !lightbox.classList.contains("hidden");
+
+// ホイール操作(Win/Mac 共通の慣習):
+//  - Ctrl/⌘ 併用 or トラックパッドのピンチ(ctrlKey で届く) → カーソル中心にズーム
+//  - Shift 併用 → 横パン
+//  - 修飾なし → パン(トラックパッドの deltaX で横、deltaY で縦)
+mlbStage.addEventListener(
+  "wheel",
+  (e) => {
+    e.preventDefault();
+    const r = mlbStage.getBoundingClientRect();
+    if (e.ctrlKey || e.metaKey) {
+      const factor = Math.exp(-e.deltaY / 100);
+      mlbZoomAt(factor, e.clientX - r.left, e.clientY - r.top);
+      return;
+    }
+    if (e.shiftKey) {
+      // 縦ホイールしか出ないマウス向けに deltaY も横移動へ回す
+      mlbTx -= e.deltaX || e.deltaY;
+      mlbApply();
+      return;
+    }
+    mlbTx -= e.deltaX;
+    mlbTy -= e.deltaY;
+    mlbApply();
+  },
+  { passive: false }
+);
+
+// ドラッグ(グラブ)で移動。動かさずに背景をクリックしたら閉じる。
+let mlbDragging = false;
+let mlbMoved = false;
+let mlbStartX = 0;
+let mlbStartY = 0;
+let mlbStartTx = 0;
+let mlbStartTy = 0;
+
+mlbStage.addEventListener("pointerdown", (e) => {
+  mlbDragging = true;
+  mlbMoved = false;
+  mlbStartX = e.clientX;
+  mlbStartY = e.clientY;
+  mlbStartTx = mlbTx;
+  mlbStartTy = mlbTy;
+  mlbStage.setPointerCapture(e.pointerId);
+  mlbStage.classList.add("grabbing");
+});
+
+mlbStage.addEventListener("pointermove", (e) => {
+  if (!mlbDragging) return;
+  const dx = e.clientX - mlbStartX;
+  const dy = e.clientY - mlbStartY;
+  if (Math.abs(dx) > 3 || Math.abs(dy) > 3) mlbMoved = true;
+  mlbTx = mlbStartTx + dx;
+  mlbTy = mlbStartTy + dy;
+  mlbApply();
+});
+
+mlbStage.addEventListener("pointerup", (e) => {
+  mlbDragging = false;
+  mlbStage.classList.remove("grabbing");
+  // 背景(図の外)をドラッグせずクリックしたら閉じる
+  if (!mlbMoved && e.target === mlbStage) closeLightbox();
+});
+
+$("mlb-zoom-in").addEventListener("click", () => mlbZoomCenter(1.25));
+$("mlb-zoom-out").addEventListener("click", () => mlbZoomCenter(1 / 1.25));
+$("mlb-reset").addEventListener("click", mlbFit);
+$("mlb-close").addEventListener("click", closeLightbox);
+
+// ライトボックス表示中はキー操作を専有する(本文ズームより優先)
+window.addEventListener(
+  "keydown",
+  (e) => {
+    if (!isLightboxOpen()) return;
+    switch (e.key) {
+      case "Escape": e.preventDefault(); closeLightbox(); break;
+      case "+": case "=": e.preventDefault(); e.stopPropagation(); mlbZoomCenter(1.25); break;
+      case "-": e.preventDefault(); e.stopPropagation(); mlbZoomCenter(1 / 1.25); break;
+      case "0": e.preventDefault(); e.stopPropagation(); mlbFit(); break;
+    }
+  },
+  true
+);
 
 // ---------- イベント配線と起動 ----------
 $("btn-open").addEventListener("click", openFileDialog);
