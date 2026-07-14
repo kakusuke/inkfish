@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    name: cargo check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # generate_context! はコンパイル時に frontendDist (../dist) を埋め込むため、
+      # cargo check の前にフロントエンドをビルドして dist を用意する。
+      - name: Build frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # Linux (WebKitGTK) のシステム依存。tauri v2 は webkit2gtk-4.1 を使う。
+      - name: Install Linux system dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      # OS ごとの export_pdf 実装 (macOS=WKWebView / Windows=WebView2 /
+      # Linux=WebKitPrintOperation) がそれぞれのターゲットでコンパイルできることを確認する。
+      - name: cargo check
+        run: cargo check --manifest-path src-tauri/Cargo.toml --locked
