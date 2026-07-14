@@ -336,9 +336,9 @@ async function openFileDialog() {
 }
 
 // ---------- PDF 書き出し ----------
-// 保存先を選ばせて、Rust 側 (WKWebView.printOperation) で直接 PDF を書き出す。
-// 印刷メディアでレンダリングされるので @media print のスタイルが効き、
-// ツールバー等のクロームは含まれない。
+// 保存先を選ばせて、Rust 側 (各 OS のネイティブ WebView の PDF 機能) で
+// 直接 PDF を書き出す。macOS は画面メディアで描画するため、書き出しの間だけ
+// body.exporting でクロームを隠し本文を全高でレイアウトする(下記参照)。
 async function exportPdf() {
   if (!currentPath) {
     showToast("先に Markdown ファイルを開いてください");

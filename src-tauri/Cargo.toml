@@ -28,3 +28,15 @@ objc2 = "0.6"
 block2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSString", "NSData", "NSError"] }
 objc2-web-kit = { version = "0.3", features = ["WKWebView", "WKPDFConfiguration", "block2"] }
+
+# PDF 書き出し (WebView2.PrintToPdf) のための WebView2 COM バインディング。
+# バージョンは wry (webview2-com 0.38 / windows 0.61) に合わせて型を一致させる。
+[target.'cfg(target_os = "windows")'.dependencies]
+webview2-com = "0.38"
+windows = { version = "0.61", features = ["Win32_Foundation"] }
+
+# PDF 書き出し (WebKitPrintOperation) のための GTK/WebKit バインディング。
+# バージョンは wry (webkit2gtk 2.0 / gtk 0.18) に合わせる。
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit2gtk = "2.0"
+gtk = "0.18"

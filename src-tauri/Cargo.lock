@@ -1716,6 +1716,7 @@ name = "inkfish"
 version = "0.1.2"
 dependencies = [
  "block2",
+ "gtk",
  "notify",
  "objc2",
  "objc2-foundation",
@@ -1727,6 +1728,9 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
+ "webkit2gtk",
+ "webview2-com",
+ "windows",
 ]
 
 [[package]]

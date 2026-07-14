@@ -336,10 +336,95 @@ async fn export_pdf(window: tauri::WebviewWindow, dest: String) -> Result<(), St
     rx.recv().map_err(|e| e.to_string())?
 }
 
-#[cfg(not(target_os = "macos"))]
+/// 表示中のドキュメントを PDF として書き出す (Windows)。
+/// WebView2 の ICoreWebView2_7::PrintToPdf でファイルへ直接書き出す。
+/// 完了ハンドラは UI スレッドで呼ばれるので、結果はチャネルで受け取る。
+#[cfg(target_os = "windows")]
+#[tauri::command]
+async fn export_pdf(window: tauri::WebviewWindow, dest: String) -> Result<(), String> {
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_7;
+    use webview2_com::PrintToPdfCompletedHandler;
+    use windows::core::{Interface, HSTRING};
+
+    let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
+    window
+        .with_webview(move |platform| {
+            // このクロージャは UI (メイン) スレッドで実行される。
+            let issue = (|| -> windows::core::Result<()> {
+                let controller = platform.controller();
+                let webview = unsafe { controller.CoreWebView2()? };
+                let webview7: ICoreWebView2_7 = webview.cast()?;
+                let handler_tx = tx.clone();
+                let handler = PrintToPdfCompletedHandler::create(Box::new(
+                    move |errcode, is_successful| {
+                        let result = if errcode.is_ok() && is_successful.as_bool() {
+                            Ok(())
+                        } else if errcode.is_err() {
+                            Err(format!("PDF の生成に失敗しました: {}", errcode.message()))
+                        } else {
+                            Err("PDF を書き込めませんでした".into())
+                        };
+                        let _ = handler_tx.send(result);
+                        Ok(())
+                    },
+                ));
+                // 設定 None で既定の用紙設定で書き出す
+                unsafe { webview7.PrintToPdf(&HSTRING::from(dest.as_str()), None, &handler)? };
+                Ok(())
+            })();
+            // 発行前に失敗したらここで結果を返す(完了ハンドラは呼ばれない)
+            if let Err(e) = issue {
+                let _ = tx.send(Err(e.message()));
+            }
+        })
+        .map_err(|e| e.to_string())?;
+
+    rx.recv().map_err(|e| e.to_string())?
+}
+
+/// 表示中のドキュメントを PDF として書き出す (Linux)。
+/// WebKitGTK の PrintOperation を「ファイルへ出力」設定で走らせ、
+/// PDF として書き込む。完了/失敗はシグナルで届くのでチャネルで受け取る。
+#[cfg(target_os = "linux")]
+#[tauri::command]
+async fn export_pdf(window: tauri::WebviewWindow, dest: String) -> Result<(), String> {
+    use gtk::prelude::*;
+    use webkit2gtk::{PrintOperation, PrintOperationExt};
+
+    let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
+    window
+        .with_webview(move |platform| {
+            // このクロージャは GTK メインスレッドで実行される。
+            let webview = platform.inner();
+            let op = PrintOperation::new(&webview);
+
+            // output-uri を指定すると GTK が「ファイルへ出力」バックエンドを選ぶ。
+            // 既定の出力フォーマットは PDF。
+            let settings = gtk::PrintSettings::new();
+            settings.set("output-uri", Some(format!("file://{}", dest).as_str()));
+            settings.set("output-file-format", Some("pdf"));
+            op.set_print_settings(&settings);
+
+            let tx_fail = tx.clone();
+            op.connect_finished(move |_| {
+                let _ = tx.send(Ok(()));
+            });
+            op.connect_failed(move |_, err| {
+                let _ = tx_fail.send(Err(format!("PDF の生成に失敗しました: {}", err)));
+            });
+            op.print();
+            // print() は非同期。スコープを抜けても操作が生き続けるよう保持する。
+            std::mem::forget(op);
+        })
+        .map_err(|e| e.to_string())?;
+
+    rx.recv().map_err(|e| e.to_string())?
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 #[tauri::command]
 async fn export_pdf(_window: tauri::WebviewWindow, _dest: String) -> Result<(), String> {
-    Err("PDF 書き出しは macOS でのみ対応しています".into())
+    Err("PDF 書き出しはこの OS では未対応です".into())
 }
 
 fn focus_window(app: &AppHandle, label: &str) {
