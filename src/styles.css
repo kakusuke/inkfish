@@ -641,6 +641,8 @@ body.dropping #viewport {
   position: fixed;
   inset: 0;
   z-index: 200;
+  /* 周囲は半透明ディム。ここ(図の外側)をクリックすると閉じる。
+     操作対象の図は #mlb-content 側を不透明にして視覚的に区別する。 */
   background: rgba(0, 0, 0, 0.82);
   backdrop-filter: blur(2px);
   animation: mlb-fade 0.12s ease-out;
@@ -673,6 +675,9 @@ body.dropping #viewport {
   top: 0;
   transform-origin: 0 0;
   will-change: transform;
+  /* 図の後ろだけ地色で不透明に塗る。周囲の半透明ディムと分かれ、
+     ここが操作対象(ドラッグ/ズーム)の領域だと視覚的に示す。 */
+  background: var(--bg);
 }
 
 /* 拡大表示中は原寸で描く(本文用の max-width 制約を打ち消す) */
