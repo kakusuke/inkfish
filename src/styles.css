@@ -614,8 +614,11 @@ body.dropping #viewport {
 
 /* --- Mermaid --- */
 .mermaid-block {
-  display: flex;
-  justify-content: center;
+  /* flex にしないこと。mermaid は描画時にこのブロック内へ一時 div+svg を挿し、
+     gantt はその親要素の offsetWidth を図幅として使う。flex だと一時 div が
+     shrink-to-fit になり幅が ~300px に潰れて gantt が「縮こまる」ため、
+     幅が親いっぱいに広がる通常のブロックにして中身は text-align で中央寄せる。 */
+  text-align: center;
   margin: 1.4em 0;
   padding: 20px;
   background: var(--bg);
