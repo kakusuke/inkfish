@@ -1,5 +1,4 @@
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openDialog, save as saveDialog, confirm } from "@tauri-apps/plugin-dialog";
@@ -310,19 +309,25 @@ async function reload(retry = true) {
   }
 }
 
-listen("md:changed", () => {
+// これらの Rust 側イベントは emit_to(label, …) で特定ウィンドウ宛に発行される。
+// グローバルの listen() は EventTarget::Any として登録されターゲット指定を無視し
+// 全ウィンドウで受信してしまうため、必ず現在の Webview にスコープして受け取る。
+// (そうしないと複数ウィンドウ時に全ウィンドウが PDF 書き出しや再読込を実行する)
+const webview = getCurrentWebview();
+
+webview.listen("md:changed", () => {
   clearTimeout(reloadTimer);
   reloadTimer = setTimeout(() => reload(), 60);
 });
 
 // Finder の「このアプリケーションで開く」など、起動後に届いたオープン要求
-listen<string>("md:open", (ev) => {
+webview.listen<string>("md:open", (ev) => {
   if (ev.payload && ev.payload !== currentPath) loadFile(ev.payload);
 });
 
 // ネイティブメニュー (File) からの操作
-listen("menu:open", () => openFileDialog());
-listen("menu:export-pdf", () => exportPdf());
+webview.listen("menu:open", () => openFileDialog());
+webview.listen("menu:export-pdf", () => exportPdf());
 
 // ---------- ファイルを開く ----------
 const MD_EXTS = ["md", "markdown", "mdown", "mdx", "txt"];
