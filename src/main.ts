@@ -829,6 +829,7 @@ let mlbStartX = 0;
 let mlbStartY = 0;
 let mlbStartTx = 0;
 let mlbStartTy = 0;
+let mlbDownOnBackdrop = false;
 
 mlbStage.addEventListener("pointerdown", (e) => {
   mlbDragging = true;
@@ -837,6 +838,9 @@ mlbStage.addEventListener("pointerdown", (e) => {
   mlbStartY = e.clientY;
   mlbStartTx = mlbTx;
   mlbStartTy = mlbTy;
+  // 下の pointerup では setPointerCapture により target が stage へ付け替えられ、
+  // 図の上で押したのか背景で押したのか区別できない。押した時点で判定しておく。
+  mlbDownOnBackdrop = e.target === mlbStage;
   mlbStage.setPointerCapture(e.pointerId);
   mlbStage.classList.add("grabbing");
 });
@@ -851,11 +855,12 @@ mlbStage.addEventListener("pointermove", (e) => {
   mlbApply();
 });
 
-mlbStage.addEventListener("pointerup", (e) => {
+mlbStage.addEventListener("pointerup", () => {
   mlbDragging = false;
   mlbStage.classList.remove("grabbing");
-  // 背景(図の外)をドラッグせずクリックしたら閉じる
-  if (!mlbMoved && e.target === mlbStage) closeLightbox();
+  // 背景(図の外)をドラッグせずクリックしたら閉じる。
+  // 図の上のクリックでは閉じない(拡大表示のまま操作を続けられるように)。
+  if (!mlbMoved && mlbDownOnBackdrop) closeLightbox();
 });
 
 $("mlb-zoom-in").addEventListener("click", () => mlbZoomCenter(1.25));
