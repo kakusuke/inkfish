@@ -84,6 +84,10 @@ let mermaid: Mermaid | null = null;
 async function getMermaid(): Promise<Mermaid> {
   if (!mermaid) {
     mermaid = (await import("mermaid")).default;
+    // ELK レイアウト (`layout: elk` 系) を登録する。ここで読み込むのは
+    // ローダー定義だけなので、実際に elk を指定した図が現れるまで
+    // 本体 (elkjs) はダウンロード / 評価されない。
+    mermaid.registerLayoutLoaders((await import("@mermaid-js/layout-elk")).default);
     initMermaid();
   }
   return mermaid;
@@ -95,6 +99,10 @@ function initMermaid() {
     securityLevel: "antiscript",
     theme: isDark() ? "dark" : "neutral",
     fontFamily: "ui-monospace, SF Mono, Menlo, monospace",
+    // 既定の id は Date.now() 由来なので、同一ミリ秒に描画開始した図が
+    // 同じ id を持ってしまう。mermaid は内部で id セレクタを使って描画先を
+    // 探すため、衝突すると片方が空の SVG になる。連番 id にして防ぐ。
+    deterministicIds: true,
   });
 }
 
@@ -120,6 +128,11 @@ function isMarpDocument(src: string): boolean {
 
 // ---------- レンダリング ----------
 async function render() {
+  // ライトボックスは SVG を id ごと複製して表示するため、開いたまま再描画すると
+  // 連番 id が複製側と衝突して新しい図が空になる。表示中のクローンは再描画前の
+  // 内容で古くなってもいるので、ここで閉じてしまう。
+  closeLightbox();
+
   const scrollTop = viewport.scrollTop;
   const marpMode = isMarpDocument(currentSource);
 

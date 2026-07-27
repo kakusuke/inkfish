@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@marp-team/marp-core": "^4.3.0",
+    "@mermaid-js/layout-elk": "^0.2.2",
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-dialog": "^2.7.1",
     "@tauri-apps/plugin-opener": "^2.5.4",
