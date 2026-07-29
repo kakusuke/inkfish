@@ -7,8 +7,23 @@
 対応フォーマット:
 
 - GitHub Flavored Markdown(テーブル / タスクリスト / 脚注 / シンタックスハイライト)
-- Mermaid
+- Mermaid(既定の dagre に加えて ELK レイアウトも利用可)
 - Marp スライド(フロントマターに `marp: true`)
+
+Mermaid で ELK レイアウトを使うには、図のフロントマターで指定します:
+
+````md
+```mermaid
+---
+config:
+  layout: elk
+---
+flowchart LR
+  A --> B --> C
+```
+````
+
+`layout` には `elk`(階層レイアウト)/ `elk.stress` / `elk.force` / `elk.mrtree` / `elk.sporeOverlap` が指定できます。
 
 ## 開発
 
