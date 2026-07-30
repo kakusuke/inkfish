@@ -1716,6 +1716,7 @@ name = "inkfish"
 version = "0.1.5"
 dependencies = [
  "block2",
+ "dunce",
  "gtk",
  "notify",
  "objc2",

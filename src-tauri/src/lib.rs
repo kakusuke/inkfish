@@ -1,10 +1,24 @@
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
+
+/// パスの正規化。`std::fs::canonicalize` の代わりに必ずこちらを使う。
+///
+/// Windows の `std::fs::canonicalize` は `\\?\C:\dir\doc.md` (verbatim prefix 付き)
+/// を返す。この形式は Win32 のパス正規化が働かず `/` を区切りとして扱えないため、
+/// この文字列をフロントへ渡すと JS 側でディレクトリを切り出して相対パスを結合する
+/// 処理 (md 内の画像・相対リンク) が成立しなくなる。dunce は安全に戻せる場合だけ
+/// 通常形式 (`C:\dir\doc.md`) に変換する (260 文字超や予約名は verbatim のまま)。
+/// 非 Windows では `std::fs::canonicalize` と同じ。
+///
+/// 台帳 (ShownFiles) の突き合わせのため、正規化は全箇所でこの関数に揃える。
+fn canonicalize(path: impl AsRef<Path>) -> std::io::Result<PathBuf> {
+    dunce::canonicalize(path)
+}
 
 /// ウィンドウごとのアクティブな watcher (label -> watcher)。
 /// 同じウィンドウが別ファイルを監視すると古い watcher は drop され解除される。
@@ -40,9 +54,7 @@ fn watch_file(
     state: State<'_, WatchState>,
     path: String,
 ) -> Result<(), String> {
-    let target = PathBuf::from(&path)
-        .canonicalize()
-        .map_err(|e| e.to_string())?;
+    let target = canonicalize(&path).map_err(|e| e.to_string())?;
     let dir = target
         .parent()
         .ok_or("親ディレクトリが見つかりません")?
@@ -76,9 +88,7 @@ fn watch_file(
 #[tauri::command]
 fn register_shown_file(window: tauri::WebviewWindow, path: String) {
     let app = window.app_handle();
-    let canon = PathBuf::from(&path)
-        .canonicalize()
-        .unwrap_or_else(|_| PathBuf::from(&path));
+    let canon = canonicalize(&path).unwrap_or_else(|_| PathBuf::from(&path));
     app.state::<ShownFiles>()
         .0
         .lock()
@@ -104,9 +114,7 @@ async fn open_path(
     window: tauri::WebviewWindow,
     path: String,
 ) -> Result<String, String> {
-    let canon = PathBuf::from(&path)
-        .canonicalize()
-        .map_err(|e| format!("ファイルが見つかりません: {e}"))?;
+    let canon = canonicalize(&path).map_err(|e| format!("ファイルが見つかりません: {e}"))?;
 
     let existing = {
         let shown = app.state::<ShownFiles>();
@@ -149,7 +157,7 @@ fn get_startup_file(
     }
     if window.label() == "main" {
         let arg = std::env::args().nth(1)?;
-        let p = PathBuf::from(arg).canonicalize().ok()?;
+        let p = canonicalize(arg).ok()?;
         return p.is_file().then(|| p.to_string_lossy().into_owned());
     }
     None
@@ -344,9 +352,25 @@ async fn export_pdf(window: tauri::WebviewWindow, dest: String) -> Result<(), St
 #[cfg(target_os = "windows")]
 #[tauri::command]
 async fn export_pdf(window: tauri::WebviewWindow, dest: String) -> Result<(), String> {
-    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_7;
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2Environment6, ICoreWebView2PrintSettings, ICoreWebView2_2, ICoreWebView2_7,
+    };
     use webview2_com::PrintToPdfCompletedHandler;
     use windows::core::{Interface, HSTRING};
+
+    /// 印刷設定を作る。既定 (設定 None) では ShouldPrintBackgrounds が FALSE で、
+    /// CSS の背景 (コードブロックの地色・表のヘッダ・Marp の `![bg]()` 背景画像) が
+    /// PDF から落ちてしまうため、明示的に有効にする。
+    /// CreatePrintSettings は比較的新しい WebView2 ランタイムの API なので、
+    /// 取得できないときは None を返して既定設定で書き出す (背景なしにはなる)。
+    fn print_settings(webview: &ICoreWebView2_7) -> Option<ICoreWebView2PrintSettings> {
+        let webview2 = webview.cast::<ICoreWebView2_2>().ok()?;
+        let env = unsafe { webview2.Environment() }.ok()?;
+        let env6 = env.cast::<ICoreWebView2Environment6>().ok()?;
+        let settings = unsafe { env6.CreatePrintSettings() }.ok()?;
+        unsafe { settings.SetShouldPrintBackgrounds(true) }.ok()?;
+        Some(settings)
+    }
 
     let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
     window
@@ -356,6 +380,7 @@ async fn export_pdf(window: tauri::WebviewWindow, dest: String) -> Result<(), St
                 let controller = platform.controller();
                 let webview = unsafe { controller.CoreWebView2()? };
                 let webview7: ICoreWebView2_7 = webview.cast()?;
+                let settings = print_settings(&webview7);
                 let handler_tx = tx.clone();
                 // webview2-com は HRESULT/BOOL を Result<(), Error> と bool に変換して渡す
                 let handler = PrintToPdfCompletedHandler::create(Box::new(
@@ -369,8 +394,14 @@ async fn export_pdf(window: tauri::WebviewWindow, dest: String) -> Result<(), St
                         Ok(())
                     },
                 ));
-                // 設定 None で既定の用紙設定で書き出す
-                unsafe { webview7.PrintToPdf(&HSTRING::from(dest.as_str()), None, &handler)? };
+                // 用紙サイズ・余白は既定のまま、背景描画だけ有効にした設定で書き出す
+                unsafe {
+                    webview7.PrintToPdf(
+                        &HSTRING::from(dest.as_str()),
+                        settings.as_ref(),
+                        &handler,
+                    )?
+                };
                 Ok(())
             })();
             // 発行前に失敗したらここで結果を返す(完了ハンドラは呼ばれない)
@@ -549,7 +580,7 @@ pub fn run() {
             for path in urls
                 .iter()
                 .filter_map(|u| u.to_file_path().ok())
-                .filter_map(|p| p.canonicalize().ok())
+                .filter_map(|p| canonicalize(p).ok())
                 .filter(|p| p.is_file())
             {
                 open_from_system(app_handle, path);
