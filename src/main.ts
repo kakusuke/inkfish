@@ -47,10 +47,14 @@ let reloadTimer: ReturnType<typeof setTimeout> | undefined;
 let isExporting = false;
 // 再描画の世代。await をまたいだ後に新しい描画が始まっていたら、古い方は手を引く。
 let renderSeq = 0;
+// 直近の描画が Marp スライドだったか。図のテーマ選びに使う。
+let marpMode = false;
 
 const isDark = () => matchMedia("(prefers-color-scheme: dark)").matches;
-// 書き出し中は body.exporting がトークンをライトへ固定するので、図も明色側へ揃える
-const mermaidTheme = () => (!isExporting && isDark() ? "dark" : "neutral");
+// 図のテーマ。ダークにするのは画面で本文を読んでいるときだけ。
+// 書き出し中は body.exporting がトークンをライトへ固定するし、Marp スライドは
+// テーマ側の地色 (既定は白) の上に載るので、いずれも明色側へ揃える。
+const mermaidTheme = () => (!isExporting && !marpMode && isDark() ? "dark" : "neutral");
 
 // ---------- Markdown (GFM) ----------
 const md: MarkdownIt = new MarkdownIt({
@@ -123,6 +127,57 @@ function initMermaid() {
   });
 }
 
+// 図のテーマが今の状況 (ダーク / 書き出し中 / Marp) と食い違っていたら当て直す。
+// initialize() は次の run() から効くので、描画の直前に呼ぶ。
+function syncMermaidTheme() {
+  if (mermaid && appliedMermaidTheme !== mermaidTheme()) initMermaid();
+}
+
+// ブロック内の図を描き、クリックで拡大表示できるようにする。
+// stale() は「自分より新しい描画が始まったか」。切り離された DOM へ描いて
+// 出る失敗を本物のエラーと取り違えないよう、要所で確認する。
+async function runMermaid(blocks: HTMLElement[], stale: () => boolean) {
+  try {
+    const m = await getMermaid();
+    if (stale()) return;
+    syncMermaidTheme();
+    await m.run({ nodes: blocks });
+  } catch (e) {
+    if (stale()) return;
+    // 構文エラーのブロックは mermaid がエラー表示に差し替えたうえで
+    // 最初のエラーを投げ直してくるので、ここへ来ること自体は珍しくない。
+    // 差し替えすら行われず SVG が入らなかったブロックはソースが生のまま
+    // 残り、黙っていると原因がまったく追えないのでそのときだけ知らせる。
+    console.error("Mermaid の描画に失敗しました", e);
+    const unrendered = blocks.filter((b) => !b.querySelector("svg")).length;
+    if (unrendered) showToast(`Mermaid を描画できませんでした (${unrendered} 件)`);
+  }
+  if (stale()) return;
+  for (const block of blocks) {
+    const svg = block.querySelector<SVGSVGElement>("svg");
+    // 構文エラーの差し替え表示 (.error-icon を含む) は拡大対象外
+    if (!svg || svg.querySelector(".error-icon")) continue;
+    block.addEventListener("click", () => openLightbox(svg));
+  }
+}
+
+// Marp が出力したコードブロックのうち mermaid のものを図の器へ差し替える。
+// Marp の markdown-it はこちらの fence ルールを通らないため、描画済みの
+// HTML から拾い直す。`<pre is="marp-pre">` ごと外すのは、そのままだと
+// Marp の auto-scaling が図を包んで測ろうとしてしまうため。
+function extractMermaidBlocks(root: HTMLElement): HTMLElement[] {
+  const blocks: HTMLElement[] = [];
+  for (const code of Array.from(root.querySelectorAll("code.language-mermaid"))) {
+    const block = document.createElement("div");
+    block.className = "mermaid-block";
+    // textContent なので Marp のハイライト用タグは落ち、実体参照も戻る
+    block.textContent = code.textContent ?? "";
+    (code.closest("pre") ?? code).replaceWith(block);
+    blocks.push(block);
+  }
+  return blocks;
+}
+
 // ---------- Marp ----------
 let marp: Marp | null = null;
 let marpBrowser: MarpCoreBrowser | null = null;
@@ -157,7 +212,7 @@ async function render() {
   closeLightbox();
 
   const scrollTop = viewport.scrollTop;
-  const marpMode = isMarpDocument(currentSource);
+  marpMode = isMarpDocument(currentSource);
 
   emptyEl.classList.add("hidden");
   modeBadge.classList.toggle("hidden", !marpMode);
@@ -169,6 +224,8 @@ async function render() {
     if (stale()) return;
     const { html, css } = marpCore.render(currentSource);
     slidesEl.innerHTML = `<style>${css}</style><div class="deck">${html}</div>`;
+    // 図の器へ差し替えるのは browser() より前。auto-scaling の対象から外す。
+    const mermaidBlocks = extractMermaidBlocks(slidesEl);
     // Marp のカスタム要素 (auto-scaling) 登録と、WebKit の
     // foreignObject スケーリング不具合へのポリフィルを適用する。
     // これがないと WKWebView ではスライド内容が原寸のままずれて描画される。
@@ -181,6 +238,10 @@ async function render() {
       const vb = svg.viewBox.baseVal;
       if (vb.width && vb.height) svg.style.aspectRatio = `${vb.width} / ${vb.height}`;
     }
+    if (mermaidBlocks.length) {
+      await runMermaid(mermaidBlocks, stale);
+      if (stale()) return;
+    }
   } else {
     // md ファイル内の生 HTML 経由の XSS (IPC 到達) を防ぐためサニタイズする
     docEl.innerHTML = DOMPurify.sanitize(md.render(currentSource));
@@ -188,27 +249,8 @@ async function render() {
     enhanceCodeBlocks(docEl);
     const blocks = Array.from(docEl.querySelectorAll<HTMLElement>(".mermaid-block"));
     if (blocks.length) {
-      try {
-        const m = await getMermaid();
-        if (stale()) return;
-        await m.run({ nodes: blocks });
-      } catch (e) {
-        // 構文エラーのブロックは mermaid がエラー表示に差し替えたうえで
-        // 最初のエラーを投げ直してくるので、ここへ来ること自体は珍しくない。
-        // 差し替えすら行われず SVG が入らなかったブロックはソースが生のまま
-        // 残り、黙っていると原因がまったく追えないのでそのときだけ知らせる。
-        console.error("Mermaid の描画に失敗しました", e);
-        const unrendered = blocks.filter((b) => !b.querySelector("svg")).length;
-        if (unrendered) showToast(`Mermaid を描画できませんでした (${unrendered} 件)`);
-      }
+      await runMermaid(blocks, stale);
       if (stale()) return;
-      // 各図をクリックでライトボックス拡大表示にする
-      for (const block of blocks) {
-        const svg = block.querySelector<SVGSVGElement>("svg");
-        // 構文エラーの差し替え表示 (.error-icon を含む) は拡大対象外
-        if (!svg || svg.querySelector(".error-icon")) continue;
-        block.addEventListener("click", () => openLightbox(svg));
-      }
     }
   }
 
@@ -441,8 +483,9 @@ async function exportPdf() {
   // クロームを隠し、本文が全高でレイアウトされるようにする。
   document.body.classList.add("exporting");
   isExporting = true;
-  // ダークテーマだと図の色だけ紙面から浮くので、書き出しの間は明色側へ寄せる
-  if (appliedMermaidTheme !== mermaidTheme()) initMermaid();
+  // 検索のゴースト消し用 filter が残っていると、Chromium は本文を丸ごと
+  // ビットマップへラスタライズしてしまう。書き出し前に必ず外す。
+  clearRepaint();
   // ここで描き切ってから印刷させるのが要点。Windows の PrintToPdf は生きている
   // DOM をその場で撮るので、mermaid の非同期描画が終わる前に走らせると、図が
   // ソースのまま紙に乗る。
@@ -456,12 +499,10 @@ async function exportPdf() {
   } finally {
     document.body.classList.remove("exporting");
     isExporting = false;
-    // 画面用のテーマへ戻す。書き出し中に OS のテーマが変わっていた場合も
-    // ここで拾える (その間の change 通知は上で無視しているため)。
-    if (appliedMermaidTheme !== mermaidTheme()) {
-      initMermaid();
-      await render();
-    }
+    // 図の色を画面用へ戻す (テーマの当て直しは render() 側でやる)。書き出し中に
+    // OS のテーマが変わっていた場合もここで拾える (その間の change 通知は
+    // 上で無視しているため)。図が一つも無い文書では描き直す必要がない。
+    if (mermaid && appliedMermaidTheme !== mermaidTheme()) await render();
   }
 }
 
@@ -651,13 +692,35 @@ let findIndex = -1;
 const findRoot = () => (slidesEl.classList.contains("hidden") ? docEl : slidesEl);
 
 // highlights を消し替えても WebKit が旧領域を再描画しないので、描画だけを強制して
-// ゴーストを消す。filter の有無をトグルすると中身がバッファへ再ラスタライズされる。
+// ゴーストを消す。filter を一度付けて外すと中身がバッファへ再ラスタライズされる。
 // brightness(1) は恒等フィルタなのでピクセルは完全に不変(透明化もなし)。
 // レイアウト・スクロール・見た目はいずれも動かない。
+//
+// 付けっぱなしにしないことが重要。filter が残った状態で PDF を書き出すと、
+// Chromium (WebView2 の PrintToPdf) は本文を合成レイヤーとして扱い、ページ全体を
+// 300dpi のビットマップへ焼いてしまう (文字が選択・検索できず、PDF も数十倍に膨らむ)。
 let repaintNudge = false;
+let repaintSeq = 0;
 function forceRepaint() {
   repaintNudge = !repaintNudge;
-  findRoot().style.filter = repaintNudge ? "brightness(1)" : "";
+  // 交互に別の恒等フィルタへ切り替える。どちらもピクセルは変えないが、値が
+  // 変わることで再描画が走る。同じ値を入れ直しても無効化されないため、連打中も
+  // 1 打ごとに確実に描き直させるにはこうして値を変える必要がある。
+  findRoot().style.filter = repaintNudge ? "brightness(1)" : "grayscale(0)";
+  // filter 付きのフレームが一度描かれてから外す (rAF 1 回だと描画前に外れて
+  // しまい再描画が起きない)。連打中は最後の 1 回だけが後始末をする。
+  const seq = ++repaintSeq;
+  requestAnimationFrame(() =>
+    requestAnimationFrame(() => {
+      if (seq === repaintSeq) clearRepaint();
+    }),
+  );
+}
+
+// 再描画用の filter を取り除く。どちらが検索対象だったかに関わらず両方消す。
+function clearRepaint() {
+  docEl.style.filter = "";
+  slidesEl.style.filter = "";
 }
 
 function clearHighlights() {
@@ -805,9 +868,9 @@ matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
   // Chromium は印刷レイアウトに入るとき prefers-color-scheme を light へ切り替え、
   // 生きているドキュメント上でここを発火させる (WebView2 の PrintToPdf も同じ)。
   // 書き出し中に再描画すると印刷が描き途中の DOM を撮ってしまうので無視する。
-  // 書き出し用のテーマ切り替えは exportPdf() が自前で行う。
+  // 書き出しの前後で必要な描き直しは exportPdf() が自前で行う。
   if (isExporting) return;
-  initMermaid();
+  // 図のテーマの当て直しは render() が描画の直前に行う
   if (currentPath) render();
 });
 
