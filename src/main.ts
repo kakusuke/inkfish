@@ -41,8 +41,16 @@ let currentPath: string | null = null;
 let currentSource = "";
 let fontScale = 1;
 let reloadTimer: ReturnType<typeof setTimeout> | undefined;
+// PDF 書き出し中か。Chromium (WebView2 の PrintToPdf を含む) は印刷レイアウトに
+// 入るとき prefers-color-scheme を light へ切り替え、生きている DOM 上で change を
+// 発火させる。その通知で再描画すると描き途中の DOM がそのまま紙に乗るため抑止する。
+let isExporting = false;
+// 再描画の世代。await をまたいだ後に新しい描画が始まっていたら、古い方は手を引く。
+let renderSeq = 0;
 
 const isDark = () => matchMedia("(prefers-color-scheme: dark)").matches;
+// 書き出し中は body.exporting がトークンをライトへ固定するので、図も明色側へ揃える
+const mermaidTheme = () => (!isExporting && isDark() ? "dark" : "neutral");
 
 // ---------- Markdown (GFM) ----------
 const md: MarkdownIt = new MarkdownIt({
@@ -83,21 +91,30 @@ md.renderer.rules.fence = (tokens, idx, options, env, self) => {
 let mermaid: Mermaid | null = null;
 async function getMermaid(): Promise<Mermaid> {
   if (!mermaid) {
-    mermaid = (await import("mermaid")).default;
+    const m = (await import("mermaid")).default;
     // ELK レイアウト (`layout: elk` 系) を登録する。ここで読み込むのは
     // ローダー定義だけなので、実際に elk を指定した図が現れるまで
     // 本体 (elkjs) はダウンロード / 評価されない。
-    mermaid.registerLayoutLoaders((await import("@mermaid-js/layout-elk")).default);
+    m.registerLayoutLoaders((await import("@mermaid-js/layout-elk")).default);
+    // 設定を当て終えるまで mermaid には代入しない。途中で失敗したときに
+    // 「初期化されていないインスタンス」がキャッシュされると、以降ずっと
+    // 既定テーマ・既定 id 生成のまま気づかず動いてしまう。
+    mermaid = m;
     initMermaid();
   }
   return mermaid;
 }
 
+// 直近 initialize() に渡した図のテーマ。描き直しが要るかの判定に使う。
+let appliedMermaidTheme: ReturnType<typeof mermaidTheme> | null = null;
+
 function initMermaid() {
-  mermaid?.initialize({
+  if (!mermaid) return;
+  appliedMermaidTheme = mermaidTheme();
+  mermaid.initialize({
     startOnLoad: false,
     securityLevel: "antiscript",
-    theme: isDark() ? "dark" : "neutral",
+    theme: appliedMermaidTheme,
     fontFamily: "ui-monospace, SF Mono, Menlo, monospace",
     // 既定の id は Date.now() 由来なので、同一ミリ秒に描画開始した図が
     // 同じ id を持ってしまう。mermaid は内部で id セレクタを使って描画先を
@@ -128,6 +145,12 @@ function isMarpDocument(src: string): boolean {
 
 // ---------- レンダリング ----------
 async function render() {
+  // 描画は mermaid / Marp の遅延ロードを挟むので、終わる前に次の描画が
+  // 始まりうる。自分より新しい描画が走り出していたら、以降の DOM 操作は
+  // すべて古い内容の上書きになるので手を引く。
+  const seq = ++renderSeq;
+  const stale = () => seq !== renderSeq;
+
   // ライトボックスは SVG を id ごと複製して表示するため、開いたまま再描画すると
   // 連番 id が複製側と衝突して新しい図が空になる。表示中のクローンは再描画前の
   // 内容で古くなってもいるので、ここで閉じてしまう。
@@ -142,12 +165,15 @@ async function render() {
   slidesEl.classList.toggle("hidden", !marpMode);
 
   if (marpMode) {
-    const { html, css } = (await getMarp()).render(currentSource);
+    const marpCore = await getMarp();
+    if (stale()) return;
+    const { html, css } = marpCore.render(currentSource);
     slidesEl.innerHTML = `<style>${css}</style><div class="deck">${html}</div>`;
     // Marp のカスタム要素 (auto-scaling) 登録と、WebKit の
     // foreignObject スケーリング不具合へのポリフィルを適用する。
     // これがないと WKWebView ではスライド内容が原寸のままずれて描画される。
     const { browser } = await import("@marp-team/marp-core/browser");
+    if (stale()) return;
     marpBrowser = marpBrowser ? marpBrowser.update() : browser(slidesEl);
     // WKWebView は viewBox だけだと高さを正しく取れないことがあるため、
     // 各スライドの実寸比を viewBox から aspect-ratio として明示する。
@@ -163,10 +189,19 @@ async function render() {
     const blocks = Array.from(docEl.querySelectorAll<HTMLElement>(".mermaid-block"));
     if (blocks.length) {
       try {
-        await (await getMermaid()).run({ nodes: blocks });
-      } catch {
-        // 構文エラーのブロックは mermaid がエラー表示に差し替える
+        const m = await getMermaid();
+        if (stale()) return;
+        await m.run({ nodes: blocks });
+      } catch (e) {
+        // 構文エラーのブロックは mermaid がエラー表示に差し替えたうえで
+        // 最初のエラーを投げ直してくるので、ここへ来ること自体は珍しくない。
+        // 差し替えすら行われず SVG が入らなかったブロックはソースが生のまま
+        // 残り、黙っていると原因がまったく追えないのでそのときだけ知らせる。
+        console.error("Mermaid の描画に失敗しました", e);
+        const unrendered = blocks.filter((b) => !b.querySelector("svg")).length;
+        if (unrendered) showToast(`Mermaid を描画できませんでした (${unrendered} 件)`);
       }
+      if (stale()) return;
       // 各図をクリックでライトボックス拡大表示にする
       for (const block of blocks) {
         const svg = block.querySelector<SVGSVGElement>("svg");
@@ -177,6 +212,7 @@ async function render() {
     }
   }
 
+  if (stale()) return;
   viewport.scrollTop = scrollTop;
   updateProgress();
   refreshFind();
@@ -404,6 +440,13 @@ async function exportPdf() {
   // createPDF は画面メディアで描画するので、書き出しの間だけツールバー等の
   // クロームを隠し、本文が全高でレイアウトされるようにする。
   document.body.classList.add("exporting");
+  isExporting = true;
+  // ダークテーマだと図の色だけ紙面から浮くので、書き出しの間は明色側へ寄せる
+  if (appliedMermaidTheme !== mermaidTheme()) initMermaid();
+  // ここで描き切ってから印刷させるのが要点。Windows の PrintToPdf は生きている
+  // DOM をその場で撮るので、mermaid の非同期描画が終わる前に走らせると、図が
+  // ソースのまま紙に乗る。
+  await render();
   await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
   try {
     await invoke("export_pdf", { dest });
@@ -412,6 +455,13 @@ async function exportPdf() {
     showToast(`PDF の書き出しに失敗しました: ${e}`);
   } finally {
     document.body.classList.remove("exporting");
+    isExporting = false;
+    // 画面用のテーマへ戻す。書き出し中に OS のテーマが変わっていた場合も
+    // ここで拾える (その間の change 通知は上で無視しているため)。
+    if (appliedMermaidTheme !== mermaidTheme()) {
+      initMermaid();
+      await render();
+    }
   }
 }
 
@@ -752,6 +802,11 @@ window.addEventListener("resize", updateProgress);
 
 // ---------- テーマ変更で Mermaid を再描画 ----------
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+  // Chromium は印刷レイアウトに入るとき prefers-color-scheme を light へ切り替え、
+  // 生きているドキュメント上でここを発火させる (WebView2 の PrintToPdf も同じ)。
+  // 書き出し中に再描画すると印刷が描き途中の DOM を撮ってしまうので無視する。
+  // 書き出し用のテーマ切り替えは exportPdf() が自前で行う。
+  if (isExporting) return;
   initMermaid();
   if (currentPath) render();
 });
