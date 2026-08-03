@@ -557,7 +557,12 @@ body.dropping #viewport {
 .markdown-body table {
   border-collapse: separate;
   border-spacing: 0;
+  /* 横スクロールのため display:block にしているが、そのままだと枠線を持つ
+     この要素だけが親幅いっぱいに広がり、行は内部の匿名テーブルボックス
+     (width:auto = shrink-to-fit)で内容幅に縮むため、内容の短い表で枠だけが
+     膨れる。width:max-content で枠を内容幅に合わせ、max-width で親幅に収める。 */
   display: block;
+  width: max-content;
   max-width: 100%;
   overflow-x: auto;
   font-size: 0.93em;
@@ -772,6 +777,18 @@ body.dropping #viewport {
   border-radius: 10px;
   box-shadow: var(--shadow);
   background: #fff;
+}
+
+/* スライド内の図は本文用のカード装飾を外し、テーマの地色に溶かす。
+   スライドは高さが 720 単位に固定されているので、はみ出す図は横スクロール
+   させずスライドの幅・高さに収める。 */
+#slides .mermaid-block {
+  margin: 0.4em 0;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: 0;
+  overflow: hidden;
 }
 
 /* ============================================================
