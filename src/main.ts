@@ -111,28 +111,43 @@ async function getMermaid(): Promise<Mermaid> {
   return mermaid;
 }
 
-// 直近 initialize() に渡した図のテーマ。描き直しが要るかの判定に使う。
-let appliedMermaidTheme: ReturnType<typeof mermaidTheme> | null = null;
+// ラベルを HTML (foreignObject) で描くか、SVG のテキストで描くか。
+// Marp スライドは全体が縮小スケールされた中に載るが、WebKit は
+// foreignObject の中身をそのスケールに追従させずに描く一方、クリップだけは
+// スケール後の矩形で行うため、ラベルの後ろが切れる (「front matter」が
+// 「front mat」になる)。スライドでは SVG のテキストに切り替えて回避する。
+// 本文では等倍なので症状が出ず、HTML ラベル (装飾やリンク) の利点を残す。
+const mermaidHtmlLabels = () => !marpMode;
+
+// 直近 initialize() に渡した設定。描き直しが要るかの判定に使う。
+const mermaidConfigKey = () => `${mermaidTheme()}|${mermaidHtmlLabels()}`;
+let appliedMermaidConfig: string | null = null;
 
 function initMermaid() {
   if (!mermaid) return;
-  appliedMermaidTheme = mermaidTheme();
+  appliedMermaidConfig = mermaidConfigKey();
+  const htmlLabels = mermaidHtmlLabels();
   mermaid.initialize({
     startOnLoad: false,
     securityLevel: "antiscript",
-    theme: appliedMermaidTheme,
+    theme: mermaidTheme(),
     fontFamily: "ui-monospace, SF Mono, Menlo, monospace",
     // 既定の id は Date.now() 由来なので、同一ミリ秒に描画開始した図が
     // 同じ id を持ってしまう。mermaid は内部で id セレクタを使って描画先を
     // 探すため、衝突すると片方が空の SVG になる。連番 id にして防ぐ。
     deterministicIds: true,
+    // 図ごとに別のキーを見るため、全体・フローチャート・クラス図の
+    // それぞれに渡す (フローチャートはエッジのラベルもこの設定に従う)。
+    htmlLabels,
+    flowchart: { htmlLabels },
+    class: { htmlLabels },
   });
 }
 
-// 図のテーマが今の状況 (ダーク / 書き出し中 / Marp) と食い違っていたら当て直す。
+// 図の設定が今の状況 (ダーク / 書き出し中 / Marp) と食い違っていたら当て直す。
 // initialize() は次の run() から効くので、描画の直前に呼ぶ。
-function syncMermaidTheme() {
-  if (mermaid && appliedMermaidTheme !== mermaidTheme()) initMermaid();
+function syncMermaidConfig() {
+  if (mermaid && appliedMermaidConfig !== mermaidConfigKey()) initMermaid();
 }
 
 // ブロック内の図を描き、クリックで拡大表示できるようにする。
@@ -142,7 +157,7 @@ async function runMermaid(blocks: HTMLElement[], stale: () => boolean) {
   try {
     const m = await getMermaid();
     if (stale()) return;
-    syncMermaidTheme();
+    syncMermaidConfig();
     await m.run({ nodes: blocks });
   } catch (e) {
     if (stale()) return;
@@ -388,6 +403,10 @@ async function render() {
   modeBadge.classList.toggle("hidden", !marpMode);
   docEl.classList.toggle("hidden", marpMode);
   slidesEl.classList.toggle("hidden", !marpMode);
+  // 使わない側の中身は捨てる。残しておくと mermaid の連番 id が前の描画の
+  // SVG とぶつかり、mermaid が id セレクタで隠れている古い方を掴むため、
+  // 新しい図が空になる (通常 ⇄ Marp を切り替えると図が消える)。
+  (marpMode ? docEl : slidesEl).replaceChildren();
 
   if (marpMode) {
     const marpCore = await getMarp();
@@ -674,10 +693,10 @@ async function exportPdf() {
   } finally {
     document.body.classList.remove("exporting");
     isExporting = false;
-    // 図の色を画面用へ戻す (テーマの当て直しは render() 側でやる)。書き出し中に
+    // 図の色を画面用へ戻す (設定の当て直しは render() 側でやる)。書き出し中に
     // OS のテーマが変わっていた場合もここで拾える (その間の change 通知は
     // 上で無視しているため)。図が一つも無い文書では描き直す必要がない。
-    if (mermaid && appliedMermaidTheme !== mermaidTheme()) await render();
+    if (mermaid && appliedMermaidConfig !== mermaidConfigKey()) await render();
   }
 }
 
