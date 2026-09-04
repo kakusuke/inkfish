@@ -1,0 +1,324 @@
+import DOMPurify from "dompurify";
+import { SCHEME, resolvePath } from "../shared/paths";
+import { md, enhanceCodeBlocks } from "./markdown";
+import { buildFrontMatterCard, fmTitle, parseFrontMatter } from "./frontmatter";
+import { applyMarpBrowser, fixSlideAspectRatio, isMarpDocument, renderMarp } from "./marp";
+import { extractMermaidBlocks, needsRedraw, runMermaid, type MermaidContext } from "./mermaid";
+import { Lightbox } from "./lightbox";
+import { FindEngine, type FindState } from "./find";
+
+/// ビューアが押されたリンクをどう扱ってほしいか。
+/// ページ内アンカーはビューアが自分でスクロールするので通知しない。
+export type LinkTarget =
+  // スキームのあるもの (http(s):// / mailto: / tel: など)
+  | { kind: "external"; href: string }
+  // スキームなし = ローカルファイルアクセス。baseDir で解決済みの絶対パス
+  | { kind: "local"; path: string };
+
+export type ViewerOptions = {
+  /// 相対パスの画像を表示できる URL に変換する。Tauri では convertFileSrc。
+  /// 関数で受けることでビューア自体は Tauri に依存しない。
+  resolveAsset: (absPath: string) => string;
+  /// front matter の title / ファイル名。ツールバーやウィンドウタイトルに使う。
+  onCaption?: (c: { title: string; name: string }) => void;
+  /// 利用者に伝えるべき失敗 (トースト相当)
+  onNotice?: (message: string) => void;
+  /// 読書位置 0..1
+  onProgress?: (ratio: number) => void;
+  onFindUpdate?: (s: FindState) => void;
+  onLinkActivate?: (t: LinkTarget) => void;
+};
+
+const MARKUP = `
+  <article class="ink-doc markdown-body hidden"></article>
+  <div class="ink-slides hidden"></div>
+`;
+
+export class DocumentViewer {
+  private root: HTMLElement;
+  private docEl: HTMLElement;
+  private slidesEl: HTMLElement;
+  private lightbox: Lightbox;
+  private find_: FindEngine;
+  private opts: ViewerOptions;
+
+  private source = "";
+  private baseDir = "";
+  private name = "";
+  private scale = 1;
+  // 直近の検索語。再描画するとマッチの Range が無効になるので張り直すのに使う。
+  // clearFind() で空に戻すので、検索を閉じたあとの再描画では張り直さない。
+  private lastQuery = "";
+  // 再描画の世代。await をまたいだ後に新しい描画が始まっていたら、古い方は手を引く。
+  private renderSeq = 0;
+  // 直近の描画が Marp スライドだったか。図のテーマ選びに使う。
+  private marpMode = false;
+  // PDF 書き出し中か。Chromium (WebView2 の PrintToPdf を含む) は印刷レイアウトに
+  // 入るとき prefers-color-scheme を light へ切り替え、生きている DOM 上で change を
+  // 発火させる。その通知で再描画すると描き途中の DOM がそのまま紙に乗るため抑止する。
+  private exporting = false;
+  private themeMedia = matchMedia("(prefers-color-scheme: dark)");
+  private onThemeChange = () => {
+    // Chromium は印刷レイアウトに入るとき prefers-color-scheme を light へ切り替え、
+    // 生きているドキュメント上でここを発火させる (WebView2 の PrintToPdf も同じ)。
+    // 書き出し中に再描画すると印刷が描き途中の DOM を撮ってしまうので無視する。
+    // 書き出しの前後で必要な描き直しは endExport() が自前で行う。
+    if (this.exporting) return;
+    // 図のテーマの当て直しは render() が描画の直前に行う
+    if (this.source) this.render();
+  };
+
+  constructor(container: HTMLElement, opts: ViewerOptions) {
+    this.opts = opts;
+
+    this.root = document.createElement("div");
+    this.root.className = "ink-viewer";
+    this.root.tabIndex = -1;
+    this.root.innerHTML = MARKUP;
+    container.appendChild(this.root);
+
+    this.docEl = this.root.querySelector<HTMLElement>(".ink-doc")!;
+    this.slidesEl = this.root.querySelector<HTMLElement>(".ink-slides")!;
+    // ライトボックスはスクロールコンテナの外 (root の兄弟) に置く。
+    // 中に入れるとスクロール位置に追従してしまう。
+    this.lightbox = new Lightbox(container);
+
+    this.find_ = new FindEngine(
+      this.root,
+      () => (this.marpMode ? this.slidesEl : this.docEl),
+      [this.docEl, this.slidesEl],
+      (s) => this.opts.onFindUpdate?.(s)
+    );
+
+    this.setScale(1);
+    this.root.addEventListener("scroll", () => this.reportProgress(), { passive: true });
+    window.addEventListener("resize", this.reportProgress);
+    this.themeMedia.addEventListener("change", this.onThemeChange);
+    this.root.addEventListener("click", (e) => this.handleClick(e));
+  }
+
+  // ---------- 公開 API ----------
+
+  get isMarp() {
+    return this.marpMode;
+  }
+
+  async setSource(src: string, meta: { baseDir: string; name: string }) {
+    this.source = src;
+    this.baseDir = meta.baseDir;
+    this.name = meta.name;
+    await this.render();
+  }
+
+  setScale(v: number) {
+    this.scale = Math.min(1.6, Math.max(0.7, v));
+    // documentElement ではなく自分の root に載せる。ガワや他のビューアの
+    // 文字サイズを巻き込まない。
+    this.root.style.setProperty("--scale", String(this.scale));
+  }
+
+  nudgeScale(delta: number) {
+    this.setScale(this.scale + delta);
+  }
+
+  scrollToTop() {
+    this.root.scrollTop = 0;
+  }
+
+  focus() {
+    this.root.focus();
+  }
+
+  // 検索 (UI はガワが持ち、エンジンだけこちらが持つ)
+  find(query: string, autoScroll = true) {
+    this.lastQuery = query;
+    this.find_.run(query, autoScroll);
+  }
+  findNext() {
+    this.find_.move(1);
+  }
+  findPrev() {
+    this.find_.move(-1);
+  }
+  clearFind() {
+    this.lastQuery = "";
+    this.find_.clear();
+  }
+
+  /// ライトボックスが開いていればキー操作を専有する (本文ズームより優先)。
+  /// 処理したら true。
+  handleLightboxKey(key: string): boolean {
+    return this.lightbox.handleKey(key);
+  }
+
+  /// PDF 書き出しの準備。ここで描き切ってから印刷させるのが要点。
+  /// Windows の PrintToPdf は生きている DOM をその場で撮るので、mermaid の
+  /// 非同期描画が終わる前に走らせると図がソースのまま紙に乗る。
+  async beginExport() {
+    this.exporting = true;
+    this.root.classList.add("is-exporting");
+    // 紙面は原寸で流す。--scale は root の inline style に載っているので
+    // CSS の `.ink-viewer.is-exporting` からは上書きできない (inline が勝つ)。
+    // ここで直接 1 に倒し、endExport() で戻す。
+    this.root.style.setProperty("--scale", "1");
+    // 検索のゴースト消し用 filter が残っていると、Chromium は本文を丸ごと
+    // ビットマップへラスタライズしてしまう。書き出し前に必ず外す。
+    this.find_.clearRepaint();
+    await this.render();
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  }
+
+  async endExport() {
+    this.exporting = false;
+    this.root.classList.remove("is-exporting");
+    this.root.style.setProperty("--scale", String(this.scale));
+    // 図の色を画面用へ戻す (設定の当て直しは render() 側でやる)。書き出し中に
+    // OS のテーマが変わっていた場合もここで拾える (その間の change 通知は
+    // 上で無視しているため)。図が一つも無い文書では描き直す必要がない。
+    if (needsRedraw(this.mermaidContext())) await this.render();
+  }
+
+  dispose() {
+    this.themeMedia.removeEventListener("change", this.onThemeChange);
+    window.removeEventListener("resize", this.reportProgress);
+  }
+
+  // ---------- 内部 ----------
+
+  private mermaidContext(): MermaidContext {
+    return { exporting: this.exporting, marp: this.marpMode };
+  }
+
+  private reportProgress = () => {
+    const max = this.root.scrollHeight - this.root.clientHeight;
+    this.opts.onProgress?.(max > 0 ? Math.min(1, this.root.scrollTop / max) : 0);
+  };
+
+  private notice(msg: string) {
+    // 書き出し中のトーストは紙に写ってしまうので出さない
+    if (!this.exporting) this.opts.onNotice?.(msg);
+  }
+
+  private async render() {
+    // 描画は mermaid / Marp の遅延ロードを挟むので、終わる前に次の描画が
+    // 始まりうる。自分より新しい描画が走り出していたら、以降の DOM 操作は
+    // すべて古い内容の上書きになるので手を引く。
+    const seq = ++this.renderSeq;
+    const stale = () => seq !== this.renderSeq;
+
+    // ライトボックスは SVG を id ごと複製して表示するため、開いたまま再描画すると
+    // 連番 id が複製側と衝突して新しい図が空になる。表示中のクローンは再描画前の
+    // 内容で古くなってもいるので、ここで閉じてしまう。
+    this.lightbox.close();
+
+    const scrollTop = this.root.scrollTop;
+    const fm = await parseFrontMatter(this.source);
+    if (stale()) return;
+    this.marpMode = isMarpDocument(fm, this.source);
+    this.opts.onCaption?.({ title: fmTitle(fm.data), name: this.name });
+    if (fm.broken) this.notice("front matter を YAML として読めませんでした");
+
+    this.docEl.classList.toggle("hidden", this.marpMode);
+    this.slidesEl.classList.toggle("hidden", !this.marpMode);
+    // 使わない側の中身は捨てる。残しておくと mermaid の連番 id が前の描画の
+    // SVG とぶつかり、mermaid が id セレクタで隠れている古い方を掴むため、
+    // 新しい図が空になる (通常 ⇄ Marp を切り替えると図が消える)。
+    (this.marpMode ? this.docEl : this.slidesEl).replaceChildren();
+
+    if (this.marpMode) {
+      await renderMarp(this.slidesEl, this.source);
+      if (stale()) return;
+      // 図の器へ差し替えるのは browser() より前。auto-scaling の対象から外す。
+      const blocks = extractMermaidBlocks(this.slidesEl);
+      await applyMarpBrowser(this.slidesEl);
+      if (stale()) return;
+      fixSlideAspectRatio(this.slidesEl);
+      if (blocks.length) {
+        await this.drawMermaid(blocks, stale);
+        if (stale()) return;
+      }
+    } else {
+      // md ファイル内の生 HTML 経由の XSS (IPC 到達) を防ぐためサニタイズする
+      this.docEl.innerHTML = DOMPurify.sanitize(md.render(fm.body));
+      // Marp は front matter を自分で消費するので、カードを足すのは本文モードだけ。
+      // 自前で組んだ要素なのでサニタイズ後に入れて問題ない。
+      const card = fm.data && buildFrontMatterCard(fm.data);
+      if (card) this.docEl.prepend(card);
+      this.rewriteLocalImages(this.docEl);
+      enhanceCodeBlocks(this.docEl, (m) => this.notice(m));
+      const blocks = Array.from(this.docEl.querySelectorAll<HTMLElement>(".mermaid-block"));
+      if (blocks.length) {
+        await this.drawMermaid(blocks, stale);
+        if (stale()) return;
+      }
+    }
+
+    if (stale()) return;
+    this.root.scrollTop = scrollTop;
+    this.reportProgress();
+    // 再描画でマッチ範囲が無効になるので張り直す (スクロールはしない)。
+    // 検索が閉じているときは lastQuery が空なので何もしない。
+    if (this.lastQuery) this.find_.run(this.lastQuery, false);
+    this.root.classList.remove("is-refreshing");
+    requestAnimationFrame(() => this.root.classList.add("is-refreshing"));
+  }
+
+  private drawMermaid(blocks: HTMLElement[], stale: () => boolean) {
+    return runMermaid(
+      blocks,
+      this.mermaidContext(),
+      stale,
+      (svg) => this.lightbox.open(svg),
+      (m) => this.notice(m)
+    );
+  }
+
+  // md ファイルからの相対パス画像を表示できる URL に変換する
+  private rewriteLocalImages(root: HTMLElement) {
+    if (!this.baseDir) return;
+    for (const img of Array.from(root.querySelectorAll("img"))) {
+      const src = img.getAttribute("src") ?? "";
+      if (!src || SCHEME.test(src)) continue;
+      img.src = this.opts.resolveAsset(resolvePath(this.baseDir, decodeURIComponent(src)));
+    }
+  }
+
+  private handleClick(e: MouseEvent) {
+    const a = (e.target as HTMLElement).closest("a");
+    if (!a) return;
+    const href = a.getAttribute("href") ?? "";
+    if (!href) return;
+    e.preventDefault();
+
+    // ページ内アンカーはビューアが自分で処理する
+    if (href.startsWith("#")) {
+      // markdown-it-anchor の id は encodeURIComponent 済み文字列そのもの。
+      // まず生の値で引き、無ければデコードした値でも引く(手書き id 対策)。
+      const rawId = href.slice(1);
+      let target = this.root.querySelector<HTMLElement>(`[id="${CSS.escape(rawId)}"]`);
+      if (!target) {
+        try {
+          const decoded = decodeURIComponent(rawId);
+          target = this.root.querySelector<HTMLElement>(`[id="${CSS.escape(decoded)}"]`);
+        } catch {
+          /* 不正な % シーケンスは無視 */
+        }
+      }
+      target?.scrollIntoView({ behavior: "smooth" });
+      return;
+    }
+
+    // スキームがあるもの (http(s):// / mailto: / tel: など) は外部で開く
+    // (`C:\…` のようなドライブレターはスキームではないのでここには来ない)
+    if (SCHEME.test(href)) {
+      this.opts.onLinkActivate?.({ kind: "external", href });
+      return;
+    }
+
+    // ここから下はスキームなし = ローカルファイルアクセスとして扱う。
+    // 開き方の判断 (md はこのビューアー / それ以外は OS 既定アプリ) はガワの仕事。
+    if (!this.baseDir) return;
+    const path = resolvePath(this.baseDir, decodeURIComponent(href));
+    this.opts.onLinkActivate?.({ kind: "local", path });
+  }
+}

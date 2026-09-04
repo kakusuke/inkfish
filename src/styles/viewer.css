@@ -1,212 +1,17 @@
 /* ============================================================
-   Markdown Viewer — design tokens
-   クールペーパー × ティール。読むための静かな道具。
-   ============================================================ */
-:root {
-  --bg: #f4f6f7;
-  --surface: #ffffff;
-  --ink: #1b242c;
-  --ink-2: #64707b;
-  --line: #e1e7ea;
-  --accent: #0e7c6b;
-  --accent-soft: rgba(14, 124, 107, 0.1);
-  --code-bg: #edf1f3;
-  --shadow: 0 1px 2px rgba(16, 24, 32, 0.06), 0 8px 24px rgba(16, 24, 32, 0.08);
-  --toolbar-bg: rgba(244, 246, 247, 0.82);
-  --scale: 1;
-
-  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
-  --sans: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Segoe UI", sans-serif;
-
-  /* code syntax (GitHub 系・可読性優先) */
-  --hl-kw: #cf222e;
-  --hl-str: #0a3069;
-  --hl-fn: #8250df;
-  --hl-num: #0550ae;
-  --hl-cm: #6e7781;
-  --hl-attr: #116329;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #14181c;
-    --surface: #1b2126;
-    --ink: #dae2e8;
-    --ink-2: #8a98a4;
-    --line: #2a3239;
-    --accent: #35c6af;
-    --accent-soft: rgba(53, 198, 175, 0.12);
-    --code-bg: #20272d;
-    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.35);
-    --toolbar-bg: rgba(20, 24, 28, 0.82);
-
-    --hl-kw: #ff7b72;
-    --hl-str: #a5d6ff;
-    --hl-fn: #d2a8ff;
-    --hl-num: #79c0ff;
-    --hl-cm: #8b949e;
-    --hl-attr: #7ee787;
-  }
-}
-
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-}
-
-html,
-body {
-  height: 100%;
-}
-
-body {
-  font-family: var(--sans);
-  background: var(--bg);
-  color: var(--ink);
-  overflow: hidden;
-  -webkit-font-smoothing: antialiased;
-}
-
-.hidden {
-  display: none !important;
-}
-
-/* ============================================================
-   ツールバー(タイトルバーオーバーレイ)
-   ============================================================ */
-#toolbar {
-  position: fixed;
-  inset: 0 0 auto 0;
-  height: 54px;
-  display: flex;
-  align-items: center;
-  padding: 0 12px 0 84px; /* 左は信号機ボタンの分 */
-  background: var(--toolbar-bg);
-  -webkit-backdrop-filter: blur(14px);
-  backdrop-filter: blur(14px);
-  border-bottom: 1px solid var(--line);
-  z-index: 10;
-  user-select: none;
-}
-
-.tb-spacer {
-  flex: 1;
-}
-
-/* --- シグネチャ: ライブカプセル --- */
-#capsule {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  max-width: 46vw;
-  padding: 5px 14px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: var(--surface);
-  font-family: var(--mono);
-  font-size: 12px;
-  color: var(--ink);
-}
-
-#file-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-#live-dot {
-  flex: none;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--ink-2);
-}
-
-#live-dot[data-state="watching"] {
-  background: var(--accent);
-  animation: pulse 2.4s ease-in-out infinite;
-}
-
-#live-dot[data-state="error"] {
-  background: #d4504c;
-  animation: none;
-}
-
-@keyframes pulse {
-  0%, 100% { box-shadow: 0 0 0 0 var(--accent-soft); }
-  50% { box-shadow: 0 0 0 5px var(--accent-soft); }
-}
-
-#mode-badge {
-  flex: none;
-  font-size: 9px;
-  letter-spacing: 0.08em;
-  padding: 2px 6px;
-  border-radius: 4px;
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-weight: 700;
-}
-
-.tb-actions {
-  display: flex;
-  gap: 2px;
-}
-
-.tb-btn {
-  display: grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  border: none;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--ink-2);
-  cursor: default;
-}
-
-.tb-btn:hover {
-  background: var(--accent-soft);
-  color: var(--accent);
-}
-
-.tb-btn:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
-/* ============================================================
-   読書プログレスバー
-   ============================================================ */
-#progress {
-  position: fixed;
-  top: 53px;
-  left: 0;
-  width: 100%;
-  height: 2px;
-  z-index: 11;
-  background: var(--accent);
-  transform: scaleX(var(--progress, 0));
-  transform-origin: 0 50%;
-  pointer-events: none;
-}
-
-/* ============================================================
    ビューポート
    ============================================================ */
-#viewport {
+/* 上端の逃げはガワの寸法なので、ガワが --ink-chrome-top で宣言する。
+   ツールバーを持たないウィンドウでは既定の 0 になり、本文が上端から始まる。 */
+.ink-viewer {
   height: 100%;
   overflow-y: auto;
-  padding-top: 54px;
+  padding-top: var(--ink-chrome-top, 0px);
   scrollbar-gutter: stable both-edges;
 }
 
-#viewport.refresh #doc,
-#viewport.refresh .deck {
+.ink-viewer.is-refreshing .ink-doc,
+.ink-viewer.is-refreshing .deck {
   animation: settle 0.28s ease-out;
 }
 
@@ -215,137 +20,6 @@ body {
   to { opacity: 1; }
 }
 
-body.dropping #viewport {
-  outline: 2px dashed var(--accent);
-  outline-offset: -8px;
-  border-radius: 12px;
-}
-
-/* ============================================================
-   空の状態
-   ============================================================ */
-#empty {
-  min-height: calc(100vh - 54px);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 36px;
-  padding: 40px 24px;
-}
-
-.drop-card {
-  text-align: center;
-}
-
-.drop-card .mark {
-  font-family: var(--mono);
-  font-size: 44px;
-  font-weight: 700;
-  color: var(--ink);
-  margin-bottom: 18px;
-}
-
-.drop-card .mark span {
-  color: var(--accent);
-}
-
-.drop-card .lead {
-  font-size: 15px;
-  font-weight: 600;
-}
-
-.drop-card .sub {
-  margin-top: 6px;
-  font-size: 12.5px;
-  color: var(--ink-2);
-}
-
-.drop-card kbd {
-  font-family: var(--mono);
-  font-size: 11px;
-  padding: 1px 5px;
-  border: 1px solid var(--line);
-  border-bottom-width: 2px;
-  border-radius: 4px;
-  background: var(--surface);
-}
-
-#empty-open {
-  margin-top: 20px;
-  padding: 7px 18px;
-  font-size: 13px;
-  font-weight: 600;
-  font-family: var(--sans);
-  color: #fff;
-  background: var(--accent);
-  border: none;
-  border-radius: 7px;
-  cursor: default;
-}
-
-#empty-open:hover {
-  filter: brightness(1.08);
-}
-
-#recents {
-  width: min(480px, 90%);
-}
-
-#recents h2 {
-  font-family: var(--mono);
-  font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--ink-2);
-  margin-bottom: 8px;
-}
-
-#recent-list {
-  list-style: none;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--surface);
-  overflow: hidden;
-}
-
-#recent-list li + li {
-  border-top: 1px solid var(--line);
-}
-
-#recent-list button {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  width: 100%;
-  padding: 9px 14px;
-  text-align: left;
-  background: none;
-  border: none;
-  cursor: default;
-  font-family: var(--sans);
-}
-
-#recent-list button:hover {
-  background: var(--accent-soft);
-}
-
-.r-name {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--ink);
-}
-
-.r-path {
-  font-family: var(--mono);
-  font-size: 10.5px;
-  color: var(--ink-2);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 100%;
-}
 
 /* ============================================================
    本文 (GFM) — ウィンドウ幅に追従する「紙のシート」
@@ -729,18 +403,18 @@ body.dropping #viewport {
 }
 
 /* --- Mermaid ライトボックス --- */
-#mermaid-lightbox {
+.ink-lightbox {
   position: fixed;
   inset: 0;
   z-index: 200;
   /* 周囲は半透明ディム。ここ(図の外側)をクリックすると閉じる。
-     操作対象の図は #mlb-content 側を不透明にして視覚的に区別する。 */
+     操作対象の図は .ink-lightbox-content 側を不透明にして視覚的に区別する。 */
   background: rgba(0, 0, 0, 0.82);
   backdrop-filter: blur(2px);
   animation: mlb-fade 0.12s ease-out;
 }
 
-#mermaid-lightbox.hidden {
+.ink-lightbox.hidden {
   display: none;
 }
 
@@ -749,7 +423,7 @@ body.dropping #viewport {
   to { opacity: 1; }
 }
 
-#mlb-stage {
+.ink-lightbox-stage {
   position: absolute;
   inset: 0;
   overflow: hidden;
@@ -757,11 +431,11 @@ body.dropping #viewport {
   touch-action: none;
 }
 
-#mlb-stage.grabbing {
+.ink-lightbox-stage.is-grabbing {
   cursor: grabbing;
 }
 
-#mlb-content {
+.ink-lightbox-content {
   position: absolute;
   left: 0;
   top: 0;
@@ -773,12 +447,12 @@ body.dropping #viewport {
 }
 
 /* 拡大表示中は原寸で描く(本文用の max-width 制約を打ち消す) */
-#mlb-content svg {
+.ink-lightbox-content svg {
   max-width: none;
   display: block;
 }
 
-#mlb-bar {
+.ink-lightbox-bar {
   position: absolute;
   bottom: 22px;
   left: 50%;
@@ -793,7 +467,7 @@ body.dropping #viewport {
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
 }
 
-.mlb-btn {
+.ink-lightbox-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -807,15 +481,15 @@ body.dropping #viewport {
   cursor: pointer;
 }
 
-.mlb-btn:hover {
+.ink-lightbox-btn:hover {
   background: var(--line);
 }
 
-.mlb-text {
+.is-text {
   font-size: 0.82em;
 }
 
-#mlb-level {
+.ink-lightbox-level {
   min-width: 46px;
   text-align: center;
   font-size: 0.82em;
@@ -840,7 +514,7 @@ body.dropping #viewport {
    ============================================================ */
 /* スライドはウィンドウ幅に追従して拡大・縮小する(svg が width:100% のため
    .deck の幅がそのままスライドの大きさになる)。上限だけ緩めに設ける。 */
-#slides .deck {
+.ink-slides .deck {
   max-width: 1680px;
   margin: 0 auto;
   padding: 32px clamp(20px, 3.5vw, 56px) 120px;
@@ -848,14 +522,14 @@ body.dropping #viewport {
 
 /* Marp が生成する .marpit がスライド(svg)を束ねる実コンテナ。
    ここを flex にしないと .deck 直下は .marpit 1 個だけで gap が効かない。 */
-#slides .marpit {
+.ink-slides .marpit {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 28px;
 }
 
-#slides .deck svg[data-marpit-svg] {
+.ink-slides .deck svg[data-marpit-svg] {
   display: block;
   width: 100%;
   height: auto;
@@ -869,7 +543,7 @@ body.dropping #viewport {
 /* スライド内の図は本文用のカード装飾を外し、テーマの地色に溶かす。
    スライドは高さが 720 単位に固定されているので、はみ出す図は横スクロール
    させずスライドの幅・高さに収める。 */
-#slides .mermaid-block {
+.ink-slides .mermaid-block {
   margin: 0.4em 0;
   padding: 0;
   background: none;
@@ -878,96 +552,6 @@ body.dropping #viewport {
   overflow: hidden;
 }
 
-/* ============================================================
-   ページ内検索バー
-   ============================================================ */
-#find-bar {
-  position: fixed;
-  top: 62px;
-  right: 14px;
-  z-index: 20;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 8px 6px 12px;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  box-shadow: var(--shadow);
-}
-
-#find-bar .find-icon {
-  flex: none;
-  color: var(--ink-2);
-}
-
-#find-input {
-  width: 200px;
-  padding: 3px 2px;
-  font-family: var(--sans);
-  font-size: 13px;
-  color: var(--ink);
-  background: none;
-  border: none;
-}
-
-#find-input:focus {
-  outline: none;
-}
-
-#find-input::placeholder {
-  color: var(--ink-2);
-}
-
-#find-count {
-  flex: none;
-  min-width: 40px;
-  text-align: right;
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--ink-2);
-  font-variant-numeric: tabular-nums;
-}
-
-#find-count.empty {
-  color: #d4504c;
-}
-
-.find-nav {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  padding-left: 6px;
-  border-left: 1px solid var(--line);
-}
-
-.find-btn {
-  display: grid;
-  place-items: center;
-  width: 26px;
-  height: 26px;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--ink-2);
-  cursor: default;
-}
-
-.find-btn:hover {
-  background: var(--accent-soft);
-  color: var(--accent);
-}
-
-.find-btn:disabled {
-  opacity: 0.35;
-  background: transparent;
-  color: var(--ink-2);
-}
-
-.find-btn:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
 
 /* 検索マッチ。CSS Custom Highlight API で塗る(DOM を変えないので改行が動かない) */
 ::highlight(find-match) {
@@ -980,136 +564,25 @@ body.dropping #viewport {
 }
 
 /* ============================================================
-   設定ポップオーバー
-   ============================================================ */
-#settings-pop {
-  position: fixed;
-  top: 60px;
-  right: 12px;
-  z-index: 20;
-  width: 340px;
-  padding: 16px;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  box-shadow: var(--shadow);
-}
-
-#settings-pop label {
-  display: block;
-  font-size: 12px;
-  font-weight: 600;
-  margin-bottom: 7px;
-}
-
-#settings-pop input {
-  width: 100%;
-  padding: 7px 10px;
-  font-family: var(--mono);
-  font-size: 12px;
-  color: var(--ink);
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 7px;
-}
-
-#settings-pop input:focus {
-  outline: 2px solid var(--accent);
-  outline-offset: -1px;
-}
-
-#settings-pop .hint {
-  margin-top: 8px;
-  font-size: 11px;
-  line-height: 1.7;
-  color: var(--ink-2);
-}
-
-#settings-pop .hint code {
-  font-family: var(--mono);
-  background: var(--code-bg);
-  padding: 0 4px;
-  border-radius: 4px;
-}
-
-#settings-save {
-  margin-top: 12px;
-  padding: 6px 14px;
-  font-size: 12px;
-  font-weight: 600;
-  font-family: var(--sans);
-  color: #fff;
-  background: var(--accent);
-  border: none;
-  border-radius: 6px;
-  cursor: default;
-}
-
-#settings-save:hover {
-  filter: brightness(1.08);
-}
-
-/* ============================================================
-   トースト
-   ============================================================ */
-#toast {
-  position: fixed;
-  bottom: 24px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 30;
-  max-width: 70vw;
-  padding: 9px 18px;
-  font-size: 12.5px;
-  background: var(--ink);
-  color: var(--bg);
-  border-radius: 999px;
-  box-shadow: var(--shadow);
-}
-
-/* リンクのホバー時に URL を左下に表示(ブラウザのステータスバー風) */
-#link-status {
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  z-index: 25;
-  max-width: 60vw;
-  padding: 4px 12px 5px;
-  font-family: var(--sans);
-  font-size: 12px;
-  line-height: 1.4;
-  color: var(--ink-2);
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-left: none;
-  border-bottom: none;
-  border-top-right-radius: 8px;
-  box-shadow: var(--shadow);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  pointer-events: none;
-}
-
-/* ============================================================
-   その他
+   モーション低減
    ============================================================ */
 @media (prefers-reduced-motion: reduce) {
-  #live-dot[data-state="watching"],
-  #viewport.refresh #doc,
-  #viewport.refresh .deck {
+  .ink-viewer.is-refreshing .ink-doc,
+  .ink-viewer.is-refreshing .deck {
     animation: none;
   }
 }
 
 /* ============================================================
    PDF 書き出し (WKWebView.createPDF は画面メディアで描画するため、
-   @media print ではなく body.exporting クラスで見た目を切り替える)
-   本文だけを1枚に流す。ダークテーマでもライトのトークンに固定し、
-   ツールバーなどのクロームやコピーボタンは隠す。
+   @media print ではなく is-exporting クラスで見た目を切り替える)
+   本文だけを1枚に流す。ダークテーマでもライトのトークンに固定する。
+   ガワを隠すのは shell.css 側の仕事。
    ============================================================ */
-body.exporting {
-  /* トークンをライトに固定(ダークテーマでも読める PDF にする) */
+.ink-viewer.is-exporting {
+  /* トークンをライトに固定(ダークテーマでも読める PDF にする)。
+     --scale はビューアが inline style で持っているため CSS からは
+     上書きできない。書き出し中の 1 倍固定は beginExport() が行う。 */
   --bg: #ffffff;
   --surface: #ffffff;
   --ink: #1b242c;
@@ -1119,7 +592,6 @@ body.exporting {
   --accent-soft: rgba(14, 124, 107, 0.1);
   --code-bg: #edf1f3;
   --shadow: none;
-  --scale: 1;
 
   --hl-kw: #cf222e;
   --hl-str: #0a3069;
@@ -1130,33 +602,21 @@ body.exporting {
 
   height: auto;
   overflow: visible;
-  background: #ffffff;
-}
-
-body.exporting #toolbar,
-body.exporting #progress,
-body.exporting #find-bar,
-body.exporting #settings-pop,
-body.exporting #toast,
-body.exporting #link-status,
-body.exporting .code-copy {
-  display: none !important;
-}
-
-body.exporting #viewport {
-  height: auto;
-  overflow: visible;
   padding-top: 0;
   scrollbar-gutter: auto;
 }
 
-body.exporting #viewport.refresh #doc,
-body.exporting #viewport.refresh .deck {
+.ink-viewer.is-exporting .code-copy {
+  display: none !important;
+}
+
+.ink-viewer.is-exporting.is-refreshing .ink-doc,
+.ink-viewer.is-exporting.is-refreshing .deck {
   animation: none;
 }
 
 /* 紙面ではカード装飾を外し、本文を幅いっぱいに流す */
-body.exporting .markdown-body {
+.ink-viewer.is-exporting .markdown-body {
   width: 100%;
   margin: 0;
   border: none;

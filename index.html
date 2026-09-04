@@ -4,100 +4,92 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Inkfish</title>
-    <link rel="stylesheet" href="/src/styles.css" />
+    <link rel="stylesheet" href="/src/styles/tokens.css" />
+    <link rel="stylesheet" href="/src/styles/viewer.css" />
+    <link rel="stylesheet" href="/src/styles/shell.css" />
     <script type="module" src="/src/main.ts" defer></script>
   </head>
   <body>
-    <!-- deep: ヘッダー全域をドラッグ領域にする(button 等のクリック可能要素は自動で除外される) -->
-    <header id="toolbar" data-tauri-drag-region="deep">
-      <div class="tb-spacer"></div>
+    <!--
+      ここにあるのは「ガワ」だけ。中身 (本文・スライド・図の拡大表示) は
+      DocumentViewer が .ink-content の中に自分で組む。別の形式のウィンドウを
+      作るときは、この HTML の代わりに独自のガワを書いて DocumentViewer を
+      載せればよい。
+    -->
 
-      <div id="capsule" class="hidden">
-        <span id="live-dot" title="ファイルの変更を監視中"></span>
-        <span id="file-name"></span>
-        <span id="mode-badge" class="hidden">MARP</span>
+    <!-- deep: ヘッダー全域をドラッグ領域にする(button 等のクリック可能要素は自動で除外される) -->
+    <header class="ink-toolbar" data-tauri-drag-region="deep">
+      <div class="ink-tb-spacer"></div>
+
+      <div class="ink-capsule hidden">
+        <span class="ink-live-dot" title="ファイルの変更を監視中"></span>
+        <span class="ink-filename"></span>
+        <span class="ink-mode-badge hidden">MARP</span>
       </div>
 
-      <div class="tb-actions">
-        <button id="btn-edit" class="tb-btn hidden" title="エディタで開く (⌘E)">
+      <div class="ink-tb-actions">
+        <button data-act="edit" class="ink-tb-btn hidden" title="エディタで開く (⌘E)">
           <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M11.5 2.5l2 2L5 13l-2.7.7L3 11l8.5-8.5z"/></svg>
         </button>
-        <button id="btn-open" class="tb-btn" title="ファイルを開く (⌘O)">
+        <button data-act="open" class="ink-tb-btn" title="ファイルを開く (⌘O)">
           <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h3l1.5 1.5h4.5A1.5 1.5 0 0 1 14 6v5.5A1.5 1.5 0 0 1 12.5 13h-9A1.5 1.5 0 0 1 2 11.5v-7z"/></svg>
         </button>
-        <button id="btn-settings" class="tb-btn" title="エディタ設定">
+        <button data-act="settings" class="ink-tb-btn" aria-expanded="false" title="エディタ設定">
           <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.8v2M8 12.2v2M1.8 8h2M12.2 8h2M3.6 3.6l1.4 1.4M11 11l1.4 1.4M12.4 3.6L11 5M5 11l-1.4 1.4"/></svg>
         </button>
       </div>
     </header>
 
-    <!-- 読書プログレスバー(ツールバー下端の細いライン) -->
-    <div id="progress" aria-hidden="true"></div>
 
-    <div id="find-bar" class="hidden">
-      <svg class="find-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="7" cy="7" r="4.2"/><path d="M10.2 10.2L14 14"/></svg>
-      <input id="find-input" type="text" spellcheck="false" placeholder="ページ内を検索" />
-      <span id="find-count">0/0</span>
-      <div class="find-nav">
-        <button id="find-prev" class="find-btn" title="前へ (⇧Enter)">
+    <!-- 読書プログレスバー(ツールバー下端の細いライン) -->
+    <div class="ink-progress" aria-hidden="true"></div>
+
+    <div class="ink-findbar hidden">
+      <svg class="ink-find-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="7" cy="7" r="4.2"/><path d="M10.2 10.2L14 14"/></svg>
+      <input class="ink-find-input" type="text" spellcheck="false" placeholder="ページ内を検索" />
+      <span class="ink-find-count">0/0</span>
+      <div class="ink-find-nav">
+        <button data-act="prev" class="ink-find-btn" title="前へ (⇧Enter)">
           <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10l4-4 4 4"/></svg>
         </button>
-        <button id="find-next" class="find-btn" title="次へ (Enter)">
+        <button data-act="next" class="ink-find-btn" title="次へ (Enter)">
           <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6l4 4 4-4"/></svg>
         </button>
-        <button id="find-close" class="find-btn" title="閉じる (Esc)">
+        <button data-act="close" class="ink-find-btn" title="閉じる (Esc)">
           <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>
         </button>
       </div>
     </div>
 
-    <div id="settings-pop" class="hidden">
-      <label for="editor-cmd">外部エディタのコマンド</label>
-      <input id="editor-cmd" type="text" spellcheck="false" placeholder="code {path}" />
-      <p class="hint">
+    <div class="ink-settings hidden">
+      <label for="ink-editor-cmd">外部エディタのコマンド</label>
+      <input id="ink-editor-cmd" class="ink-editor-cmd" type="text" spellcheck="false" placeholder="code {path}" />
+      <p class="ink-hint">
         {path} がファイルパスに置き換わります(省略時は末尾に付加)。<br />
         例: <code>code {path}</code> / <code>open -a "Visual Studio Code" {path}</code> / <code>subl {path}</code>
       </p>
-      <button id="settings-save">保存</button>
+      <button class="ink-settings-save">保存</button>
     </div>
 
-    <main id="viewport">
-      <div id="empty">
-        <div class="drop-card">
-          <div class="mark">M<span>↓</span></div>
-          <p class="lead">Markdown ファイルをここにドロップ</p>
-          <p class="sub">または <kbd>⌘O</kbd> で開く — GFM・Mermaid・Marp 対応</p>
-          <button id="empty-open">ファイルを開く</button>
-        </div>
-        <div id="recents" class="hidden">
-          <h2>最近開いたファイル</h2>
-          <ul id="recent-list"></ul>
-        </div>
+    <!-- 中身のマウント先。DocumentViewer がこの中に本文・スライド・
+         図の拡大表示を組む -->
+    <div class="ink-content"></div>
+
+    <!-- 何も開いていないときの案内。中身の上に重ねる -->
+    <div class="ink-empty">
+      <div class="ink-drop-card">
+        <div class="ink-mark">M<span>↓</span></div>
+        <p class="ink-lead">Markdown ファイルをここにドロップ</p>
+        <p class="ink-sub">または <kbd>⌘O</kbd> で開く — GFM・Mermaid・Marp 対応</p>
+        <button data-act="empty-open" class="ink-empty-open">ファイルを開く</button>
       </div>
-
-      <article id="doc" class="markdown-body hidden"></article>
-      <div id="slides" class="hidden"></div>
-    </main>
-
-    <!-- Mermaid 図の拡大表示ライトボックス -->
-    <div id="mermaid-lightbox" class="hidden" aria-hidden="true">
-      <div id="mlb-stage"><div id="mlb-content"></div></div>
-      <div id="mlb-bar">
-        <button id="mlb-zoom-out" class="mlb-btn" title="縮小 (−)">
-          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3.5 8h9"/></svg>
-        </button>
-        <span id="mlb-level">100%</span>
-        <button id="mlb-zoom-in" class="mlb-btn" title="拡大 (+)">
-          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg>
-        </button>
-        <button id="mlb-reset" class="mlb-btn mlb-text" title="全体表示に戻す (0)">リセット</button>
-        <button id="mlb-close" class="mlb-btn" title="閉じる (Esc)">
-          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>
-        </button>
+      <div class="ink-recents hidden">
+        <h2>最近開いたファイル</h2>
+        <ul class="ink-recent-list"></ul>
       </div>
     </div>
 
-    <div id="toast" class="hidden"></div>
-    <div id="link-status" class="hidden" aria-hidden="true"></div>
+    <div class="ink-toast hidden"></div>
+    <div class="ink-linkstatus hidden" aria-hidden="true"></div>
   </body>
 </html>
