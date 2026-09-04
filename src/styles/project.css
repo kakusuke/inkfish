@@ -1,10 +1,383 @@
 /* ============================================================
    プロジェクトウィンドウ (ツリーペイン + タブ) のガワ
+   共通のクローム部品は chrome.css、本文は viewer.css。
+   ここにあるのはこの形式固有の「置き場所」だけ。
    ============================================================ */
-.ink-project-boot {
-  padding: 80px 24px;
-  font-family: var(--mono);
+
+/* ツールバーは 2 段。上段はディレクトリのパス、下段はタブ列。
+   上段に左 84px の余白があるのは macOS の信号機ボタンの逃げ。 */
+:root {
+  --ink-tb-top: 32px;
+  --ink-tabstrip: 38px;
+  --ink-chrome: calc(var(--ink-tb-top) + var(--ink-tabstrip));
+}
+
+.ink-toolbar {
+  position: fixed;
+  inset: 0 0 auto 0;
+  z-index: 10;
+  height: var(--ink-chrome);
+  background: var(--toolbar-bg);
+  backdrop-filter: saturate(180%) blur(18px);
+  border-bottom: 1px solid var(--line);
+}
+
+.ink-tb-top {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--ink-tb-top);
+  padding: 0 10px 0 84px;
+}
+
+.ink-tb-spacer {
+  flex: 1;
+}
+
+/* 上段のカプセルは中央寄せ。中身はディレクトリのパスなので、
+   ファイル名より長くなりやすく幅を広めに取る。 */
+.ink-tb-top .ink-capsule {
+  max-width: 52vw;
+}
+
+.ink-folder-icon {
+  display: flex;
+  color: var(--ink-2);
+}
+
+/* ============================================================
+   タブ列
+   空き領域は data-tauri-drag-region="deep" のままなのでウィンドウを
+   動かせる。タブは role="tab" なので Tauri のドラッグ領域から外れ、
+   pointer イベントがこちらに届く (並べ替え・切り離しに使う)。
+   ============================================================ */
+.ink-tabstrip {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: var(--ink-tabstrip);
+  padding: 0 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.ink-tabstrip::-webkit-scrollbar {
+  display: none;
+}
+
+.ink-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 240px;
+  height: 30px;
+  padding: 0 6px 0 11px;
+  font-family: var(--sans);
   font-size: 12px;
   color: var(--ink-2);
-  text-align: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  cursor: default;
+  /* 掴んだときにテキスト選択が始まらないように */
+  user-select: none;
+}
+
+.ink-tab:hover {
+  background: color-mix(in srgb, var(--surface) 60%, transparent);
+}
+
+.ink-tab.is-active {
+  color: var(--ink);
+  background: var(--surface);
+  border-color: var(--line);
+}
+
+.ink-tab.is-dragging {
+  opacity: 0.75;
+  box-shadow: var(--shadow);
+}
+
+.ink-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.ink-tab-label {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ink-tab-badge {
+  flex: none;
+  padding: 1px 4px;
+  font-family: var(--mono);
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 3px;
+}
+
+.ink-tab-close {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--ink-2);
+  border-radius: 4px;
+  opacity: 0;
+}
+
+.ink-tab:hover .ink-tab-close,
+.ink-tab.is-active .ink-tab-close {
+  opacity: 1;
+}
+
+.ink-tab-close:hover {
+  color: var(--ink);
+  background: var(--accent-soft);
+}
+
+/* ============================================================
+   本体 (ツリーペイン | つまみ | タブの中身)
+   ============================================================ */
+.ink-body {
+  position: fixed;
+  inset: var(--ink-chrome) 0 0 0;
+  display: grid;
+  grid-template-columns: var(--ink-pane-w, 260px) 1px 1fr;
+}
+
+body.is-pane-collapsed .ink-body {
+  grid-template-columns: 0 0 1fr;
+}
+
+body.is-pane-collapsed .ink-pane,
+body.is-pane-collapsed .ink-splitter {
+  display: none;
+}
+
+.ink-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.ink-pane-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 8px 6px 14px;
+}
+
+.ink-pane-title {
+  flex: 1;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+
+.ink-pane-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  color: var(--ink-2);
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  cursor: default;
+}
+
+.ink-pane-btn:hover {
+  color: var(--ink);
+  background: var(--accent-soft);
+}
+
+.ink-splitter {
+  background: var(--line);
+  cursor: col-resize;
+}
+
+.ink-splitter:hover {
+  background: var(--accent);
+}
+
+/* ============================================================
+   ツリー
+   ============================================================ */
+.ink-tree {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 6px 16px;
+}
+
+.ink-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  /* --depth は 1 段ぶんの字下げ。行の当たり判定は端まで残す */
+  padding: 3px 6px 3px calc(6px + var(--depth, 0) * 13px);
+  font-family: var(--sans);
+  font-size: 12.5px;
+  color: var(--ink);
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  cursor: default;
+}
+
+.ink-tree-row:hover {
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+}
+
+.ink-tree-row.is-cursor:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.ink-tree-row.is-dir {
+  color: var(--ink-2);
+  font-weight: 600;
+}
+
+.ink-tree-row.is-active {
+  color: #fff;
+  background: var(--accent);
+}
+
+.ink-tree-twisty {
+  flex: none;
+  width: 11px;
+  font-size: 9px;
+  color: var(--ink-2);
+}
+
+.ink-tree-row.is-active .ink-tree-twisty {
+  color: #fff;
+}
+
+.ink-tree-label {
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 開いているタブのファイルに付ける点 */
+.ink-tree-dot {
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: transparent;
+}
+
+.ink-tree-row.is-open .ink-tree-dot {
+  background: var(--accent);
+}
+
+.ink-tree-row.is-active .ink-tree-dot {
+  background: #fff;
+}
+
+.ink-tree-empty,
+.ink-tree-note {
+  padding: 10px 8px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--ink-2);
+}
+
+.ink-tree-note {
+  color: var(--accent);
+}
+
+/* ============================================================
+   タブの中身
+   ビューアは height:100% なので、枠側が高さを与える必要がある。
+   絶対配置で重ねておき、表示中のもの以外は .hidden で隠す。
+   ============================================================ */
+.ink-tabpanes {
+  position: relative;
+  min-width: 0;
+  background: var(--bg);
+}
+
+.ink-tabpane {
+  position: absolute;
+  inset: 0;
+  /* 上端の逃げはツールバーではなくこの枠が持っているので 0 にする */
+  --ink-chrome-top: 0px;
+}
+
+/* ドロップの受け入れ枠。ビューアではなくタブの器に描くので、
+   ガワの CSS だけで完結する (ビューア側は D&D を知らない)。 */
+body.is-dropping .ink-tabpanes {
+  outline: 2px dashed var(--accent);
+  outline-offset: -8px;
+  border-radius: 12px;
+}
+
+/* タブが 1 つも無いときの案内 */
+.ink-empty-tabs {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 24px;
+  background: var(--bg);
+}
+
+/* ============================================================
+   PDF 書き出し中。共通のクロームを隠すのは chrome.css。
+   ここではツリーとタブ列を隠し、アクティブなタブが全高で流れるように
+   絶対配置を解く (絶対配置のままだと本文の高さがページに伝わらない)。
+   ============================================================ */
+body.is-exporting .ink-pane,
+body.is-exporting .ink-splitter,
+body.is-exporting .ink-tabstrip,
+body.is-exporting .ink-empty-tabs {
+  display: none !important;
+}
+
+body.is-exporting .ink-body {
+  position: static;
+  inset: auto;
+  display: block;
+}
+
+body.is-exporting .ink-tabpanes {
+  position: static;
+  /* 地色を塗ったままだと、ダークテーマの色が紙の余白に出てしまう
+     (本文の外側 = Marp スライドの周りが黒くなる)。白地を透かす。 */
+  background: transparent;
+}
+
+body.is-exporting .ink-tabpane {
+  position: static;
+  height: auto;
+  background: transparent;
 }

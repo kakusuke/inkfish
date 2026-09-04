@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { shortenPath as shortenDir } from "../shared/paths";
 
 /// Rust 側 (list_open_windows) が返すウィンドウ 1 件。
 type WindowEntry = {
@@ -12,10 +13,6 @@ type WindowEntry = {
   current: boolean;
 };
 
-/// ホームディレクトリを ~ に畳んでパスを読みやすくする。
-/// 環境変数はフロントから読めないので、パスの形から推測する。
-const HOME_RE = /^\/Users\/[^/]+|^\/home\/[^/]+|^[A-Za-z]:[\\/]Users[\\/][^\\/]+/;
-const shortenDir = (dir: string) => dir.replace(HOME_RE, "~");
 
 /// ファイル名のヘッダーに付くキャレットのドロップダウン。
 /// 押すと開いているウィンドウが並び、選ぶとその窓が前面に来る。

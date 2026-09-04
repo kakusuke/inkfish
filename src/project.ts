@@ -1,10 +1,6 @@
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import { ProjectShell } from "./project/project";
 
-// プロジェクトウィンドウの入口。ルートは Rust 側が起動前に決めている。
-async function boot() {
-  const root = await invoke<string | null>("get_project_root");
-  const el = document.querySelector<HTMLElement>(".ink-project-boot")!;
-  el.textContent = root ?? "(ルートが渡されていません)";
-}
-
-void boot();
+// ガワ (ProjectShell) が中身 (DocumentViewer) をタブごとに生成して配線する。
+// ビューア自体は Tauri に依存しないので、convertFileSrc は関数として渡す。
+new ProjectShell({ resolveAsset: convertFileSrc }).start();

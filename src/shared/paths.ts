@@ -42,3 +42,8 @@ export function resolvePath(dir: string, rel: string): string {
   }
   return stack.join(joinSep(dir));
 }
+
+// ホームディレクトリを ~ に畳んでパスを読みやすくする。
+// 環境変数はフロントから読めないので、パスの形から推測する。
+const HOME_RE = /^\/Users\/[^/]+|^\/home\/[^/]+|^[A-Za-z]:[\\/]Users[\\/][^\\/]+/;
+export const shortenPath = (p: string) => p.replace(HOME_RE, "~");
