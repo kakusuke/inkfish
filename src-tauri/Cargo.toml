@@ -23,6 +23,7 @@ notify = "8"
 shell-words = "1"
 # Windows の canonicalize が返す `\\?\C:\…` を通常形式へ戻す (canonicalize() 参照)
 dunce = "1"
+ignore = "0.4"
 
 # PDF 書き出し (WKWebView.createPDF) のための Objective-C ブリッジ
 [target.'cfg(target_os = "macos")'.dependencies]

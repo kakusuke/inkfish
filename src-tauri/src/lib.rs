@@ -1,3 +1,4 @@
+use ignore::WalkBuilder;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
@@ -30,9 +31,21 @@ fn canonicalize(path: impl AsRef<Path>) -> std::io::Result<PathBuf> {
 struct WindowWatch {
     watcher: RecommendedWatcher,
     /// 今 watch しているディレクトリ。タブが変わったときの差分更新に使う。
+    /// (プロジェクトのルートは再帰監視なので別に持つ)
     dirs: HashSet<PathBuf>,
-    /// 変更を通知したい対象ファイル。watcher のクロージャが読むので Arc。
-    files: Arc<Mutex<HashSet<PathBuf>>>,
+    /// 今 watch しているプロジェクトのルート
+    root: Option<PathBuf>,
+    /// watcher のクロージャが読む対象。差し替えるので Arc + Mutex。
+    targets: Arc<Mutex<WatchTargets>>,
+}
+
+/// watcher のクロージャが「何を通知すべきか」を決めるための情報。
+#[derive(Default)]
+struct WatchTargets {
+    /// 中身が変わったら md:changed を出すファイル (開いているタブ)
+    files: HashSet<PathBuf>,
+    /// 配下の md / ディレクトリが増減したら tree:changed を出すルート
+    root: Option<PathBuf>,
 }
 
 /// ウィンドウごとの監視 (label -> WindowWatch)。
@@ -67,6 +80,11 @@ struct OpenTabs(Mutex<HashMap<String, WindowTabs>>);
 #[derive(Default)]
 struct ProjectRoots(Mutex<HashMap<String, PathBuf>>);
 
+/// プロジェクトウィンドウが起動時に開くルート (label -> root)。
+/// PendingOpen と同じく、JS が立ち上がる前に決まった分をここで受け渡す。
+#[derive(Default)]
+struct PendingProject(Mutex<HashMap<String, String>>);
+
 /// ウィンドウが起動時に開くべきファイル (label -> path)。
 /// WebView の JS が立ち上がる前に届いた分をここに保持し、
 /// フロントエンドが get_startup_file で取り出す。
@@ -79,9 +97,91 @@ static WINDOW_SEQ: AtomicUsize = AtomicUsize::new(1);
 /// 追加ウィンドウをずらす量 (論理ピクセル)
 const CASCADE_STEP: f64 = 28.0;
 
+/// このビューアーで開く拡張子。フロントの isMarkdownPath と揃える。
+/// (bundle の fileAssociations もこの一覧に合わせてある)
+const MD_EXTS: [&str; 5] = ["md", "markdown", "mdown", "mkd", "mdx"];
+
+fn is_markdown_path(p: &Path) -> bool {
+    p.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| MD_EXTS.iter().any(|m| e.eq_ignore_ascii_case(m)))
+        .unwrap_or(false)
+}
+
+/// ツリー走査の上限。巨大なディレクトリを指定されたときに固まらないようにする。
+/// 超えたら打ち切って truncated を返し、フロントは自動更新をやめて手動に落とす。
+const TREE_MAX_DEPTH: usize = 12;
+const TREE_MAX_FILES: usize = 5000;
+
 #[tauri::command]
 fn read_md_file(path: String) -> Result<String, String> {
     std::fs::read_to_string(&path).map_err(|e| e.to_string())
+}
+
+/// このウィンドウの watcher を用意する (無ければ作る)。
+///
+/// 1 ウィンドウ = watcher 1 つ。開いているタブの親ディレクトリと
+/// プロジェクトのルートを、同じ watcher に載せる。
+fn ensure_watch<'a>(
+    app: &AppHandle,
+    map: &'a mut HashMap<String, WindowWatch>,
+    label: &str,
+) -> Result<&'a mut WindowWatch, String> {
+    match map.entry(label.to_string()) {
+        Entry::Occupied(e) => Ok(e.into_mut()),
+        Entry::Vacant(v) => {
+            let targets: Arc<Mutex<WatchTargets>> = Arc::new(Mutex::new(WatchTargets::default()));
+            let watched = Arc::clone(&targets);
+            let emit_label = label.to_string();
+            let app = app.clone();
+            let watcher = notify::recommended_watcher(
+                move |res: notify::Result<notify::Event>| {
+                    let Ok(event) = res else { return };
+                    use notify::EventKind::*;
+                    if !matches!(event.kind, Create(_) | Modify(_) | Remove(_)) {
+                        return;
+                    }
+                    let t = watched.lock().unwrap();
+
+                    // 開いているファイルの中身が変わった
+                    for path in event.paths.iter().filter(|p| t.files.contains(*p)) {
+                        let _ = app.emit_to(
+                            emit_label.as_str(),
+                            "md:changed",
+                            path.to_string_lossy().into_owned(),
+                        );
+                    }
+
+                    // ツリーの見た目が変わりうるのは md / ディレクトリの増減だけ。
+                    // 中身の変更 (Modify(Data)) では木は変わらないので出さない。
+                    // 拡張子つきで md でないものは、エディタの一時ファイル
+                    // (`.swp` / `~`) を弾くために除く。
+                    let Some(root) = t.root.as_ref() else { return };
+                    let structural = matches!(
+                        event.kind,
+                        Create(_) | Remove(_) | Modify(notify::event::ModifyKind::Name(_))
+                    );
+                    if !structural {
+                        return;
+                    }
+                    let relevant = event.paths.iter().any(|p| {
+                        p.starts_with(root)
+                            && (is_markdown_path(p) || p.extension().is_none())
+                    });
+                    if relevant {
+                        let _ = app.emit_to(emit_label.as_str(), "tree:changed", ());
+                    }
+                },
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(v.insert(WindowWatch {
+                watcher,
+                dirs: HashSet::new(),
+                root: None,
+                targets,
+            }))
+        }
+    }
 }
 
 /// このウィンドウが開いているファイルの変更監視を張り直す。
@@ -100,56 +200,28 @@ fn watch_files(
     state: State<'_, WatchState>,
     paths: Vec<String>,
 ) -> Result<(), String> {
-    let targets: Vec<PathBuf> = paths.iter().filter_map(|p| canonicalize(p).ok()).collect();
-    let dirs: HashSet<PathBuf> = targets
+    let files: Vec<PathBuf> = paths.iter().filter_map(|p| canonicalize(p).ok()).collect();
+    let dirs: HashSet<PathBuf> = files
         .iter()
         .filter_map(|p| p.parent().map(|d| d.to_path_buf()))
         .collect();
-    let files: HashSet<PathBuf> = targets.into_iter().collect();
 
-    let label = window.label().to_string();
     let mut map = state.0.lock().unwrap();
-
-    let entry = match map.entry(label.clone()) {
-        Entry::Occupied(e) => e.into_mut(),
-        Entry::Vacant(v) => {
-            let shared: Arc<Mutex<HashSet<PathBuf>>> = Arc::new(Mutex::new(HashSet::new()));
-            let watched = Arc::clone(&shared);
-            let emit_label = label.clone();
-            let watcher = notify::recommended_watcher(
-                move |res: notify::Result<notify::Event>| {
-                    let Ok(event) = res else { return };
-                    use notify::EventKind::*;
-                    if !matches!(event.kind, Create(_) | Modify(_) | Remove(_)) {
-                        return;
-                    }
-                    let set = watched.lock().unwrap();
-                    for path in event.paths.iter().filter(|p| set.contains(*p)) {
-                        let _ = app.emit_to(
-                            emit_label.as_str(),
-                            "md:changed",
-                            path.to_string_lossy().into_owned(),
-                        );
-                    }
-                },
-            )
-            .map_err(|e| e.to_string())?;
-            v.insert(WindowWatch {
-                watcher,
-                dirs: HashSet::new(),
-                files: shared,
-            })
-        }
-    };
+    let entry = ensure_watch(&app, &mut map, window.label())?;
 
     // 監視ディレクトリを差分更新する (先に集めてから触るのは、
-    // dirs を読みながら watcher と dirs を書き換えられないため)
-    let gone: Vec<PathBuf> = entry.dirs.difference(&dirs).cloned().collect();
+    // dirs を読みながら watcher と dirs を書き換えられないため)。
+    // プロジェクトのルート配下は再帰監視で既に見ているので重ねない。
+    let root = entry.root.clone();
+    let covered = |d: &PathBuf| root.as_ref().is_some_and(|r| d.starts_with(r));
+    let wanted: HashSet<PathBuf> = dirs.into_iter().filter(|d| !covered(d)).collect();
+
+    let gone: Vec<PathBuf> = entry.dirs.difference(&wanted).cloned().collect();
     for dir in gone {
         let _ = entry.watcher.unwatch(&dir);
         entry.dirs.remove(&dir);
     }
-    let added: Vec<PathBuf> = dirs.difference(&entry.dirs).cloned().collect();
+    let added: Vec<PathBuf> = wanted.difference(&entry.dirs).cloned().collect();
     for dir in added {
         entry
             .watcher
@@ -157,8 +229,184 @@ fn watch_files(
             .map_err(|e| e.to_string())?;
         entry.dirs.insert(dir);
     }
-    *entry.files.lock().unwrap() = files;
+    entry.targets.lock().unwrap().files = files.into_iter().collect();
     Ok(())
+}
+
+/// プロジェクトのルートを再帰監視して、配下の md / ディレクトリの増減を
+/// `tree:changed` で知らせる。ルートを開いたときに 1 度だけ呼ぶ。
+///
+/// ツリーが上限に当たった (truncated) ときはフロントがこれを呼ばず、
+/// 手動更新に落とす。巨大なツリーの再帰監視は費用が読めないため。
+#[tauri::command]
+fn watch_tree(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    state: State<'_, WatchState>,
+    root: String,
+) -> Result<(), String> {
+    let root = canonicalize(&root).map_err(|e| e.to_string())?;
+    let mut map = state.0.lock().unwrap();
+    let entry = ensure_watch(&app, &mut map, window.label())?;
+
+    if entry.root.as_ref() == Some(&root) {
+        return Ok(());
+    }
+    if let Some(old) = entry.root.take() {
+        let _ = entry.watcher.unwatch(&old);
+    }
+    entry
+        .watcher
+        .watch(&root, RecursiveMode::Recursive)
+        .map_err(|e| e.to_string())?;
+
+    // ルート配下を再帰で見るようになったので、重複する個別のディレクトリ監視を外す
+    let dup: Vec<PathBuf> = entry
+        .dirs
+        .iter()
+        .filter(|d| d.starts_with(&root))
+        .cloned()
+        .collect();
+    for dir in dup {
+        let _ = entry.watcher.unwatch(&dir);
+        entry.dirs.remove(&dir);
+    }
+
+    entry.root = Some(root.clone());
+    entry.targets.lock().unwrap().root = Some(root);
+    Ok(())
+}
+
+
+// ---------- プロジェクトペインのツリー ----------
+
+/// ツリーの節。ディレクトリなら children を持つ。
+#[derive(serde::Serialize)]
+struct TreeNode {
+    name: String,
+    /// 絶対パス。フロントはこれをそのまま open_path へ渡す。
+    path: String,
+    /// ディレクトリか
+    dir: bool,
+    children: Vec<TreeNode>,
+}
+
+#[derive(serde::Serialize)]
+struct MdTree {
+    root: String,
+    children: Vec<TreeNode>,
+    /// 見つかった md の件数
+    files: usize,
+    /// 上限に当たって打ち切ったか。フロントは監視をやめて手動更新に落とす。
+    truncated: bool,
+}
+
+/// 中間表現。相対パスを積んでから木に組み直す。
+#[derive(Default)]
+struct TreeBuilder {
+    dirs: HashMap<String, TreeBuilder>,
+    files: Vec<String>,
+}
+
+impl TreeBuilder {
+    fn insert(&mut self, segments: &[String]) {
+        match segments {
+            [] => {}
+            [name] => self.files.push(name.clone()),
+            [head, rest @ ..] => self.dirs.entry(head.clone()).or_default().insert(rest),
+        }
+    }
+
+    /// ディレクトリを先に、それぞれ名前順 (大文字小文字を無視) で並べる。
+    fn into_nodes(self, base: &Path) -> Vec<TreeNode> {
+        let mut dirs: Vec<(String, TreeBuilder)> = self.dirs.into_iter().collect();
+        dirs.sort_by_key(|(n, _)| n.to_lowercase());
+        let mut files = self.files;
+        files.sort_by_key(|n| n.to_lowercase());
+
+        let mut out = Vec::with_capacity(dirs.len() + files.len());
+        for (name, sub) in dirs {
+            let path = base.join(&name);
+            let children = sub.into_nodes(&path);
+            out.push(TreeNode {
+                name,
+                path: path.to_string_lossy().into_owned(),
+                dir: true,
+                children,
+            });
+        }
+        for name in files {
+            let path = base.join(&name);
+            out.push(TreeNode {
+                name,
+                path: path.to_string_lossy().into_owned(),
+                dir: false,
+                children: Vec::new(),
+            });
+        }
+        out
+    }
+}
+
+/// ルート配下の md ファイルと、それを子孫に持つディレクトリだけの木を返す。
+///
+/// 走査は ignore クレート (ripgrep と同じもの) に任せる。既定で
+/// ドット始まりを除外し `.gitignore` / `.git/info/exclude` / グローバル
+/// 無視設定を尊重するので、node_modules や dist は自然に消える。
+/// シンボリックリンクは辿らない (リンクのループで無限走査になるため)。
+///
+/// md を子孫に持たないディレクトリは、md ファイルのパスだけを積んで
+/// 木に組み直すので結果として現れない。
+#[tauri::command]
+fn read_md_tree(path: String) -> Result<MdTree, String> {
+    let root = canonicalize(&path).map_err(|e| format!("開けません: {e}"))?;
+    if !root.is_dir() {
+        return Err("ディレクトリではありません".into());
+    }
+
+    let mut builder = TreeBuilder::default();
+    let mut files = 0usize;
+    let mut truncated = false;
+
+    for entry in WalkBuilder::new(&root)
+        .hidden(true)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .parents(true)
+        .follow_links(false)
+        .max_depth(Some(TREE_MAX_DEPTH))
+        .build()
+    {
+        // 読めないディレクトリは黙って飛ばす (権限が無いだけのことが多い)
+        let Ok(entry) = entry else { continue };
+        if !entry.file_type().is_some_and(|t| t.is_file()) {
+            continue;
+        }
+        if !is_markdown_path(entry.path()) {
+            continue;
+        }
+        if files >= TREE_MAX_FILES {
+            truncated = true;
+            break;
+        }
+        let Ok(rel) = entry.path().strip_prefix(&root) else {
+            continue;
+        };
+        let segments: Vec<String> = rel
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect();
+        builder.insert(&segments);
+        files += 1;
+    }
+
+    Ok(MdTree {
+        children: builder.into_nodes(&root),
+        root: root.to_string_lossy().into_owned(),
+        files,
+        truncated,
+    })
 }
 
 /// フロントが自分のタブ構成を丸ごと申告する。
@@ -403,6 +651,100 @@ async fn open_path(
     })
 }
 
+/// ディレクトリを開く。プロジェクトウィンドウの振り分けは Rust 側が決める。
+/// 同じルートを開いている窓があれば前面化するだけ ("focused")。
+///
+/// ウィンドウ生成はメインスレッドへのディスパッチを伴うため async。
+#[tauri::command]
+async fn open_dir_window(app: AppHandle, path: String) -> Result<String, String> {
+    let root = canonicalize(&path).map_err(|e| format!("開けません: {e}"))?;
+    if !root.is_dir() {
+        return Err("ディレクトリではありません".into());
+    }
+    if let Some(label) = project_window_for(&app, &root) {
+        focus_window(&app, &label);
+        return Ok("focused".into());
+    }
+    spawn_project_window(&app, root)?;
+    Ok("new-window".into())
+}
+
+/// そのルートを開いているプロジェクトウィンドウの label。
+fn project_window_for(app: &AppHandle, root: &Path) -> Option<String> {
+    let live = app.webview_windows();
+    app.state::<ProjectRoots>()
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(label, r)| r.as_path() == root && live.contains_key(*label))
+        .map(|(label, _)| label.clone())
+}
+
+/// プロジェクトウィンドウを作る。既存の前面ウィンドウからカスケードで並べる。
+fn spawn_project_window(app: &AppHandle, root: PathBuf) -> Result<(), String> {
+    let origin = app
+        .webview_windows()
+        .values()
+        .find(|w| w.is_focused().unwrap_or(false))
+        .and_then(window_origin)
+        .map(|(x, y)| (x + CASCADE_STEP, y + CASCADE_STEP));
+    spawn_project_window_at(app, root, origin)
+}
+
+/// 位置を明示してプロジェクトウィンドウを作る。
+///
+/// 単一文書のウィンドウ (index.html) とは別のページを読む。ガワが違うので
+/// 実行時に切り替えるのではなくページを分けてある。ルートは JS が起動する前に
+/// 決まっているので PendingProject に積み、get_project_root で取り出させる。
+///
+/// ProjectRoots への登録は Rust 側で行う。フロントの登録待ちにすると、
+/// その隙に届いた Finder のオープンが「空のウィンドウ」と誤認して
+/// この窓に吸い込まれてしまう。
+fn spawn_project_window_at(
+    app: &AppHandle,
+    root: PathBuf,
+    origin: Option<(f64, f64)>,
+) -> Result<(), String> {
+    let label = format!("project-{}", WINDOW_SEQ.fetch_add(1, Ordering::Relaxed));
+    let root_str = root.to_string_lossy().into_owned();
+
+    app.state::<PendingProject>()
+        .0
+        .lock()
+        .unwrap()
+        .insert(label.clone(), root_str);
+    app.state::<ProjectRoots>()
+        .0
+        .lock()
+        .unwrap()
+        .insert(label.clone(), root);
+
+    let mut builder =
+        WebviewWindowBuilder::new(app, &label, WebviewUrl::App("project.html".into()))
+            .title("Inkfish")
+            // ツリーペインとタブを載せるので単一文書の窓より広くする
+            .inner_size(1360.0, 880.0)
+            .min_inner_size(720.0, 420.0);
+
+    if let Some((x, y)) = origin {
+        builder = builder.position(x, y);
+    }
+
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .hidden_title(true);
+
+    if let Err(e) = builder.build() {
+        // 作れなかった label を台帳に残さない
+        app.state::<PendingProject>().0.lock().unwrap().remove(&label);
+        app.state::<ProjectRoots>().0.lock().unwrap().remove(&label);
+        return Err(e.to_string());
+    }
+    Ok(())
+}
+
 /// 起動時に開くべきファイルを返す。
 /// Finder 経由・CLI 引数・新規ウィンドウの割り当てはいずれも PendingOpen に
 /// 積まれているので、ここは取り出すだけ。振り分けは setup と
@@ -415,18 +757,70 @@ fn get_startup_file(
     pending.0.lock().unwrap().remove(window.label())
 }
 
-/// コマンド引数から開くべき md ファイルを集める。
+/// プロジェクトウィンドウが起動時に開くルートを返す。
+///
+/// あわせて空のウィンドウを片付ける。ディレクトリを開くとプロジェクト
+/// ウィンドウが新しく出るので、それを頼んだ空の窓 (起動直後の main など) が
+/// 使われないまま残ってしまう。ここでやるのは、この時点なら他の窓が
+/// すべて作られていて「本当に空か」を判定できるため
+/// (CLI / Finder / メニュー / D&D のどの経路でも同じ後始末になる)。
+#[tauri::command]
+fn get_project_root(app: AppHandle, window: tauri::WebviewWindow) -> Option<String> {
+    let root = app
+        .state::<PendingProject>()
+        .0
+        .lock()
+        .unwrap()
+        .remove(window.label());
+    close_empty_windows(&app, window.label());
+    root
+}
+
+/// タブもプロジェクトのルートも持たないウィンドウを閉じる。
+/// 起動時のファイルを待っている窓 (PendingOpen にある) は空でも残す。
+fn close_empty_windows(app: &AppHandle, except: &str) {
+    let open = app.state::<OpenTabs>().0.lock().unwrap().clone();
+    let roots: HashSet<String> = app
+        .state::<ProjectRoots>()
+        .0
+        .lock()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect();
+    let pending: HashSet<String> = app
+        .state::<PendingOpen>()
+        .0
+        .lock()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect();
+
+    for (label, w) in app.webview_windows() {
+        if label == except || roots.contains(&label) || pending.contains(&label) {
+            continue;
+        }
+        if open.get(&label).is_none_or(|wt| wt.tabs.is_empty()) {
+            let _ = w.close();
+        }
+    }
+}
+
+/// コマンド引数から開くべきものを集める。返り値は (ファイル, ディレクトリ)。
+/// ファイルは単一文書ウィンドウ、ディレクトリはプロジェクトウィンドウで開く。
 ///
 /// - `-` 始まりは読み飛ばす。macOS が LaunchServices 経由で付ける
 ///   `-psn_0_12345` もこれで落ちる
 /// - `--` 以降はフラグ判定をやめて全部パスとして扱う
 ///   (`inkfish -- -weird-name.md` が開ける)
-/// - 開けないものやディレクトリは黙って捨てる。GUI アプリなので
-///   argv のエラーを出す先がない (release の Windows はコンソールを持たない)
-/// - 同じファイルの重複は落とす。`inkfish a.md a.md` で 2 窓に同じ文書が
+/// - 開けないものは黙って捨てる。GUI アプリなので argv のエラーを
+///   出す先がない (release の Windows はコンソールを持たない)
+/// - 同じパスの重複は落とす。`inkfish a.md a.md` で 2 窓に同じ文書が
 ///   出ると「同じファイルは同じウィンドウ」(OpenTabs) が崩れる
-fn cli_files() -> Vec<PathBuf> {
+fn cli_targets() -> (Vec<PathBuf>, Vec<PathBuf>) {
     let mut files: Vec<PathBuf> = Vec::new();
+    let mut dirs: Vec<PathBuf> = Vec::new();
     let mut only_paths = false;
     for arg in std::env::args().skip(1) {
         if !only_paths {
@@ -439,11 +833,15 @@ fn cli_files() -> Vec<PathBuf> {
             }
         }
         let Ok(p) = canonicalize(&arg) else { continue };
-        if p.is_file() && !files.contains(&p) {
+        if p.is_dir() {
+            if !dirs.contains(&p) {
+                dirs.push(p);
+            }
+        } else if p.is_file() && !files.contains(&p) {
             files.push(p);
         }
     }
-    files
+    (files, dirs)
 }
 
 /// ログインシェルの PATH を取得する。
@@ -525,12 +923,16 @@ fn build_menu<R: tauri::Runtime>(
     let open = MenuItemBuilder::with_id("open", "開く…")
         .accelerator("CmdOrCtrl+O")
         .build(app)?;
+    let open_dir = MenuItemBuilder::with_id("open_dir", "フォルダを開く…")
+        .accelerator("CmdOrCtrl+Shift+O")
+        .build(app)?;
     let export_pdf = MenuItemBuilder::with_id("export_pdf", "PDF で書き出す…")
         .accelerator("CmdOrCtrl+Shift+E")
         .build(app)?;
 
     let file_menu = SubmenuBuilder::new(app, "ファイル")
         .item(&open)
+        .item(&open_dir)
         .item(&export_pdf)
         .separator()
         .close_window()
@@ -860,6 +1262,16 @@ fn open_from_system(app: &AppHandle, path: PathBuf) {
     }
 }
 
+/// Finder から渡されたディレクトリを開く。
+/// 同じルートの窓があれば前面化、無ければプロジェクトウィンドウを作る。
+fn open_dir_from_system(app: &AppHandle, root: PathBuf) {
+    if let Some(label) = project_window_for(app, &root) {
+        focus_window(app, &label);
+        return;
+    }
+    let _ = spawn_project_window(app, root);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
@@ -869,48 +1281,72 @@ pub fn run() {
         .manage(OpenTabs::default())
         .manage(PendingOpen::default())
         .manage(ProjectRoots::default())
+        .manage(PendingProject::default())
         .setup(|app| {
-            // CLI 引数のファイルを振り分ける。config 宣言の main ウィンドウは
-            // build 中に作られているので、この時点で存在する。
-            // WebView の JS が動き出す前なので、PendingOpen に積めば
-            // get_startup_file が拾ってくれる。
-            let files = cli_files();
-            let Some((first, rest)) = files.split_first() else {
+            // CLI 引数を振り分ける。config 宣言の main ウィンドウは build 中に
+            // 作られているので、この時点で存在する。WebView の JS が動き出す
+            // 前なので、PendingOpen / PendingProject に積めば起動時に拾われる。
+            let (files, dirs) = cli_targets();
+            if files.is_empty() && dirs.is_empty() {
                 return Ok(());
-            };
+            }
             let handle = app.handle();
 
-            // Finder からのオープン (RunEvent::Opened) が先に main へ積んでいる
-            // 可能性があるので、空いているときだけ入れる。
-            handle
-                .state::<PendingOpen>()
-                .0
-                .lock()
-                .unwrap()
-                .entry("main".to_string())
-                .or_insert_with(|| first.to_string_lossy().into_owned());
+            // 追加の窓は main の位置を基準にカスケードで並べる
+            let base = handle
+                .get_webview_window("main")
+                .as_ref()
+                .and_then(window_origin);
+            let mut nth = 0usize;
+            let mut next_origin = |base: Option<(f64, f64)>| {
+                nth += 1;
+                let step = CASCADE_STEP * nth as f64;
+                base.map(|(x, y)| (x + step, y + step))
+            };
 
-            // 2 つ目以降は main の位置を基準にカスケードで並べる
-            let base = handle.get_webview_window("main").as_ref().and_then(window_origin);
-            for (i, path) in rest.iter().enumerate() {
-                let step = CASCADE_STEP * (i + 1) as f64;
-                let origin = base.map(|(x, y)| (x + step, y + step));
-                spawn_viewer_window_at(handle, path.to_string_lossy().into_owned(), origin)?;
+            if let Some((first, rest)) = files.split_first() {
+                // Finder からのオープン (RunEvent::Opened) が先に main へ積んで
+                // いる可能性があるので、空いているときだけ入れる。
+                handle
+                    .state::<PendingOpen>()
+                    .0
+                    .lock()
+                    .unwrap()
+                    .entry("main".to_string())
+                    .or_insert_with(|| first.to_string_lossy().into_owned());
+
+                for path in rest {
+                    let origin = next_origin(base);
+                    spawn_viewer_window_at(handle, path.to_string_lossy().into_owned(), origin)?;
+                }
             }
+
+            for root in &dirs {
+                let origin = next_origin(base);
+                spawn_project_window_at(handle, root.clone(), origin)?;
+            }
+
+            // 引数がディレクトリだけのときに残る空の main は、プロジェクト
+            // ウィンドウが起動して get_project_root を呼ぶときに片付けられる。
             Ok(())
         })
         .menu(|handle| build_menu(handle))
         .on_menu_event(|app, event| match event.id().as_ref() {
             "open" => emit_to_focused(app, "menu:open"),
+            "open_dir" => emit_to_focused(app, "menu:open-dir"),
             "export_pdf" => emit_to_focused(app, "menu:export-pdf"),
             _ => {}
         })
         .invoke_handler(tauri::generate_handler![
             read_md_file,
+            read_md_tree,
             watch_files,
+            watch_tree,
             open_in_editor,
             open_path,
             get_startup_file,
+            get_project_root,
+            open_dir_window,
             set_window_tabs,
             list_open_windows,
             focus_window_by_label,
@@ -927,9 +1363,12 @@ pub fn run() {
                 .iter()
                 .filter_map(|u| u.to_file_path().ok())
                 .filter_map(|p| canonicalize(p).ok())
-                .filter(|p| p.is_file())
             {
-                open_from_system(app_handle, path);
+                if path.is_dir() {
+                    open_dir_from_system(app_handle, path);
+                } else if path.is_file() {
+                    open_from_system(app_handle, path);
+                }
             }
         }
         // 閉じたウィンドウの台帳と watcher を掃除する
@@ -958,6 +1397,12 @@ pub fn run() {
                 .remove(&label);
             app_handle
                 .state::<ProjectRoots>()
+                .0
+                .lock()
+                .unwrap()
+                .remove(&label);
+            app_handle
+                .state::<PendingProject>()
                 .0
                 .lock()
                 .unwrap()

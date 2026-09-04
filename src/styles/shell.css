@@ -299,8 +299,15 @@ body.is-dropping .ink-content {
   background: var(--surface);
 }
 
-.ink-empty-open {
+.ink-empty-actions {
+  display: flex;
+  gap: 10px;
   margin-top: 20px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.ink-empty-open {
   padding: 7px 18px;
   font-size: 13px;
   font-weight: 600;
@@ -621,4 +628,11 @@ body.is-exporting .ink-empty,
 body.is-exporting .ink-toast,
 body.is-exporting .ink-linkstatus {
   display: none !important;
+}
+
+/* 空の状態の副ボタン (フォルダを開く)。主ボタンより控えめに見せる */
+.ink-empty-open.is-ghost {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--accent);
 }

@@ -89,9 +89,15 @@
     <div class="ink-empty">
       <div class="ink-drop-card">
         <div class="ink-mark">M<span>↓</span></div>
-        <p class="ink-lead">Markdown ファイルをここにドロップ</p>
-        <p class="ink-sub">または <kbd>⌘O</kbd> で開く — GFM・Mermaid・Marp 対応</p>
-        <button data-act="empty-open" class="ink-empty-open">ファイルを開く</button>
+        <p class="ink-lead">Markdown ファイルかフォルダをここにドロップ</p>
+        <p class="ink-sub">
+          <kbd>⌘O</kbd> でファイル、<kbd>⌘⇧O</kbd> でフォルダ — GFM・Mermaid・Marp 対応
+        </p>
+        <div class="ink-empty-actions">
+          <button data-act="empty-open" class="ink-empty-open">ファイルを開く</button>
+          <!-- フォルダを開くとツリーペインとタブを持つ別形式のウィンドウになる -->
+          <button data-act="open-dir" class="ink-empty-open is-ghost">フォルダを開く</button>
+        </div>
       </div>
       <div class="ink-recents hidden">
         <h2>最近開いたファイル</h2>

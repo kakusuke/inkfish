@@ -15,8 +15,10 @@ import { exportPdf } from "../chrome/pdf";
 import { WindowMenu } from "../chrome/windowmenu";
 import {
   isMarkdownPath,
+  openDirDialog,
+  openDirWindow,
+  openDropped,
   openFileDialog,
-  pickDroppedMarkdown,
   readMdFile,
   requestOpen,
   setWindowTabs,
@@ -118,6 +120,7 @@ export class AppShell {
     });
 
     $('[data-act="open"]').addEventListener("click", () => this.pickFile());
+    $('[data-act="open-dir"]')?.addEventListener("click", () => this.pickDir());
     $('[data-act="empty-open"]').addEventListener("click", () => this.pickFile());
     $('[data-act="edit"]').addEventListener("click", () => this.editCurrent());
   }
@@ -144,6 +147,7 @@ export class AppShell {
 
     // ネイティブメニュー (ファイル) からの操作
     webview.listen("menu:open", () => this.pickFile());
+    webview.listen("menu:open-dir", () => this.pickDir());
     webview.listen("menu:export-pdf", () => this.exportPdf());
   }
 
@@ -178,9 +182,12 @@ export class AppShell {
       if (ev.payload.type === "over") return;
       document.body.classList.toggle("is-dropping", ev.payload.type === "enter");
       if (ev.payload.type !== "drop") return;
-      const p = pickDroppedMarkdown(ev.payload.paths);
-      if (p) this.openPath(p);
-      else this.toast.show("Markdown ファイルをドロップしてください");
+      // フォルダなら Rust がプロジェクトウィンドウを開く
+      void openDropped(
+        ev.payload.paths,
+        (p) => this.openPath(p),
+        (msg) => this.toast.show(msg)
+      );
     });
   }
 
@@ -189,6 +196,17 @@ export class AppShell {
   private async pickFile() {
     const path = await openFileDialog();
     if (path) this.openPath(path);
+  }
+
+  /// フォルダを選んでプロジェクトウィンドウで開く
+  private async pickDir() {
+    const path = await openDirDialog();
+    if (!path) return;
+    try {
+      await openDirWindow(path);
+    } catch (e) {
+      this.toast.show(String(e));
+    }
   }
 
   /// ファイルを開く。ウィンドウの振り分けは Rust 側が決める。

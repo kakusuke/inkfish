@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  tauri.conf.json と同じディレクトリに置くと、Tauri が既定の Info.plist に
+  マージしてくれる。フォルダを Inkfish に渡せるようにするために置いてある
+  (bundle の fileAssociations は拡張子しか受け付けず、public.folder のような
+  UTI を宣言できない)。
+
+  CFBundleDocumentTypes はキーごとの上書きになるので、fileAssociations が
+  生成する Markdown の宣言もここに書き写してある。片方だけにすると
+  もう片方の関連付けが消える。拡張子の一覧は tauri.conf.json の
+  fileAssociations と、Rust 側の MD_EXTS と揃えること。
+-->
+<plist version="1.0">
+<dict>
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>Markdown</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Owner</string>
+      <key>CFBundleTypeExtensions</key>
+      <array>
+        <string>md</string>
+        <string>markdown</string>
+        <string>mdown</string>
+        <string>mkd</string>
+        <string>mdx</string>
+      </array>
+      <key>CFBundleTypeMIMETypes</key>
+      <array>
+        <string>text/markdown</string>
+      </array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>Folder</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <!-- Alternate: フォルダの既定アプリを Finder から奪わない -->
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>public.folder</string>
+      </array>
+    </dict>
+  </array>
+</dict>
+</plist>

@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for all viewer windows",
-  "windows": ["main", "viewer-*"],
+  "description": "Capability for all Inkfish windows (single document and project)",
+  "windows": ["main", "viewer-*", "project-*"],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",

@@ -10,6 +10,20 @@ export default defineConfig(async () => ({
   //
   // 1. prevent Vite from obscuring rust errors
   clearScreen: false,
+
+  // ウィンドウの形式ごとにページを分ける。
+  //   index.html   … 単一文書のウィンドウ (src/shell)
+  //   project.html … ツリーペイン + タブのウィンドウ (src/project)
+  // ガワは「窓の形式ごとに変わる部分」なので、実行時に切り替えるのではなく
+  // それぞれの HTML に自分のガワを書いて DocumentViewer を載せる。
+  build: {
+    rollupOptions: {
+      input: {
+        main: "index.html",
+        project: "project.html",
+      },
+    },
+  },
   // 2. tauri expects a fixed port, fail if that port is not available
   server: {
     port: 1420,
