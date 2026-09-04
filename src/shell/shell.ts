@@ -6,13 +6,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { basename, dirname } from "../shared/paths";
 import { DocumentViewer, type LinkTarget } from "../viewer/viewer";
 import { Toolbar } from "./toolbar";
-import { Toast, wireLinkStatus } from "./toast";
-import { PopoverGroup } from "./popover";
-import { FindBar } from "./findbar";
-import { fillSettings, openInEditor, wireSettings } from "./settings";
+import { Toast, wireLinkStatus } from "../chrome/toast";
+import { PopoverGroup } from "../chrome/popover";
+import { FindBar } from "../chrome/findbar";
+import { fillSettings, openInEditor, wireSettings } from "../chrome/settings";
 import { pushRecent, renderRecents } from "./recents";
-import { exportPdf } from "./pdf";
-import { WindowMenu } from "./windowmenu";
+import { exportPdf } from "../chrome/pdf";
+import { WindowMenu } from "../chrome/windowmenu";
 import {
   isMarkdownPath,
   openFileDialog,
@@ -22,7 +22,7 @@ import {
   requestOpen,
   setWindowCaption,
   watchFile,
-} from "./files";
+} from "../chrome/files";
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
 
