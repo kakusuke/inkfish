@@ -39,6 +39,9 @@ struct PendingOpen(Mutex<HashMap<String, String>>);
 /// 追加ウィンドウのラベル採番用
 static WINDOW_SEQ: AtomicUsize = AtomicUsize::new(1);
 
+/// 追加ウィンドウをずらす量 (論理ピクセル)
+const CASCADE_STEP: f64 = 28.0;
+
 #[tauri::command]
 fn read_md_file(path: String) -> Result<String, String> {
     std::fs::read_to_string(&path).map_err(|e| e.to_string())
@@ -145,22 +148,46 @@ async fn open_path(
 }
 
 /// 起動時に開くべきファイルを返す。
-/// PendingOpen (Finder 経由 / 新規ウィンドウの割り当て) を優先し、
-/// main ウィンドウのみ CLI 引数 (argv[1]) にフォールバックする。
+/// Finder 経由・CLI 引数・新規ウィンドウの割り当てはいずれも PendingOpen に
+/// 積まれているので、ここは取り出すだけ。振り分けは setup と
+/// open_from_system に集めてある。
 #[tauri::command]
 fn get_startup_file(
     window: tauri::WebviewWindow,
     pending: State<'_, PendingOpen>,
 ) -> Option<String> {
-    if let Some(p) = pending.0.lock().unwrap().remove(window.label()) {
-        return Some(p);
+    pending.0.lock().unwrap().remove(window.label())
+}
+
+/// コマンド引数から開くべき md ファイルを集める。
+///
+/// - `-` 始まりは読み飛ばす。macOS が LaunchServices 経由で付ける
+///   `-psn_0_12345` もこれで落ちる
+/// - `--` 以降はフラグ判定をやめて全部パスとして扱う
+///   (`inkfish -- -weird-name.md` が開ける)
+/// - 開けないものやディレクトリは黙って捨てる。GUI アプリなので
+///   argv のエラーを出す先がない (release の Windows はコンソールを持たない)
+/// - 同じファイルの重複は落とす。`inkfish a.md a.md` で 2 窓に同じ文書が
+///   出ると「同じファイルは同じウィンドウ」(ShownFiles) が崩れる
+fn cli_files() -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = Vec::new();
+    let mut only_paths = false;
+    for arg in std::env::args().skip(1) {
+        if !only_paths {
+            if arg == "--" {
+                only_paths = true;
+                continue;
+            }
+            if arg.starts_with('-') {
+                continue;
+            }
+        }
+        let Ok(p) = canonicalize(&arg) else { continue };
+        if p.is_file() && !files.contains(&p) {
+            files.push(p);
+        }
     }
-    if window.label() == "main" {
-        let arg = std::env::args().nth(1)?;
-        let p = canonicalize(arg).ok()?;
-        return p.is_file().then(|| p.to_string_lossy().into_owned());
-    }
-    None
+    files
 }
 
 /// ログインシェルの PATH を取得する。
@@ -467,9 +494,36 @@ fn focus_window(app: &AppHandle, label: &str) {
     }
 }
 
+/// ウィンドウの左上座標を論理ピクセルで返す。カスケードの基準に使う。
+fn window_origin(w: &tauri::WebviewWindow) -> Option<(f64, f64)> {
+    let pos = w.outer_position().ok()?;
+    let scale = w.scale_factor().ok()?;
+    Some((pos.x as f64 / scale, pos.y as f64 / scale))
+}
+
 /// 指定ファイルを開く新しいビューアウィンドウを作る。
-/// パスは PendingOpen に積み、フロントエンドが起動時に取り出す。
+/// 既存の前面ウィンドウと完全に重ならないよう、少しずらして出す (カスケード)。
 fn spawn_viewer_window(app: &AppHandle, path: String) -> Result<(), String> {
+    let origin = app
+        .webview_windows()
+        .values()
+        .find(|w| w.is_focused().unwrap_or(false))
+        .and_then(window_origin)
+        .map(|(x, y)| (x + CASCADE_STEP, y + CASCADE_STEP));
+    spawn_viewer_window_at(app, path, origin)
+}
+
+/// 位置を明示してビューアウィンドウを作る。
+/// パスは PendingOpen に積み、フロントエンドが起動時に取り出す。
+///
+/// 起動直後 (setup) はまだどのウィンドウもフォーカスを持たないため、
+/// spawn_viewer_window のフォーカス探索が空振りして全窓が同座標に重なる。
+/// CLI 引数から複数開くときは呼び出し側が基準座標を渡す。
+fn spawn_viewer_window_at(
+    app: &AppHandle,
+    path: String,
+    origin: Option<(f64, f64)>,
+) -> Result<(), String> {
     let label = format!("viewer-{}", WINDOW_SEQ.fetch_add(1, Ordering::Relaxed));
     app.state::<PendingOpen>()
         .0
@@ -482,16 +536,8 @@ fn spawn_viewer_window(app: &AppHandle, path: String) -> Result<(), String> {
         .inner_size(1100.0, 840.0)
         .min_inner_size(520.0, 400.0);
 
-    // 既存の前面ウィンドウと完全に重ならないよう、少しずらして出す (カスケード)
-    if let Some(origin) = app.webview_windows().values().find_map(|w| {
-        if !w.is_focused().unwrap_or(false) {
-            return None;
-        }
-        let pos = w.outer_position().ok()?;
-        let scale = w.scale_factor().ok()?;
-        Some((pos.x as f64 / scale, pos.y as f64 / scale))
-    }) {
-        builder = builder.position(origin.0 + 28.0, origin.1 + 28.0);
+    if let Some((x, y)) = origin {
+        builder = builder.position(x, y);
     }
 
     #[cfg(target_os = "macos")]
@@ -555,6 +601,36 @@ pub fn run() {
         .manage(WatchState::default())
         .manage(ShownFiles::default())
         .manage(PendingOpen::default())
+        .setup(|app| {
+            // CLI 引数のファイルを振り分ける。config 宣言の main ウィンドウは
+            // build 中に作られているので、この時点で存在する。
+            // WebView の JS が動き出す前なので、PendingOpen に積めば
+            // get_startup_file が拾ってくれる。
+            let files = cli_files();
+            let Some((first, rest)) = files.split_first() else {
+                return Ok(());
+            };
+            let handle = app.handle();
+
+            // Finder からのオープン (RunEvent::Opened) が先に main へ積んでいる
+            // 可能性があるので、空いているときだけ入れる。
+            handle
+                .state::<PendingOpen>()
+                .0
+                .lock()
+                .unwrap()
+                .entry("main".to_string())
+                .or_insert_with(|| first.to_string_lossy().into_owned());
+
+            // 2 つ目以降は main の位置を基準にカスケードで並べる
+            let base = handle.get_webview_window("main").as_ref().and_then(window_origin);
+            for (i, path) in rest.iter().enumerate() {
+                let step = CASCADE_STEP * (i + 1) as f64;
+                let origin = base.map(|(x, y)| (x + step, y + step));
+                spawn_viewer_window_at(handle, path.to_string_lossy().into_owned(), origin)?;
+            }
+            Ok(())
+        })
         .menu(|handle| build_menu(handle))
         .on_menu_event(|app, event| match event.id().as_ref() {
             "open" => emit_to_focused(app, "menu:open"),
