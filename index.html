@@ -21,14 +21,17 @@
     <header class="ink-toolbar" data-tauri-drag-region="deep">
       <div class="ink-tb-spacer"></div>
 
-      <div class="ink-capsule hidden">
+      <!-- カプセル全体が開いているウィンドウの一覧を開くボタン。
+           button なので data-tauri-drag-region="deep" から自動で除外される
+           (= ここではウィンドウをドラッグできない) -->
+      <button class="ink-capsule hidden" aria-haspopup="listbox" aria-expanded="false" title="開いているウィンドウ">
         <span class="ink-live-dot" title="ファイルの変更を監視中"></span>
         <span class="ink-filename"></span>
         <span class="ink-mode-badge hidden">MARP</span>
-        <button class="ink-window-toggle" aria-haspopup="listbox" aria-expanded="false" title="開いているウィンドウ">
+        <span class="ink-caret" aria-hidden="true">
           <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5l4 4 4-4"/></svg>
-        </button>
-      </div>
+        </span>
+      </button>
 
       <div class="ink-tb-actions">
         <button data-act="edit" class="ink-tb-btn hidden" title="エディタで開く (⌘E)">

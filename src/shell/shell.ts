@@ -107,13 +107,11 @@ export class AppShell {
     );
     const windowPopover = this.popovers.register({
       panel: $(".ink-window-menu"),
-      toggle: this.toolbar.windowToggle,
+      toggle: this.toolbar.capsule,
       onOpen: () => this.windowMenu.refresh(),
     });
     this.windowMenu.close = () => this.popovers.close(windowPopover);
-    this.toolbar.windowToggle.addEventListener("click", () =>
-      this.popovers.toggle(windowPopover)
-    );
+    this.toolbar.capsule.addEventListener("click", () => this.popovers.toggle(windowPopover));
     // ↑↓ / Enter は一覧が開いているときだけ専有する
     window.addEventListener("keydown", (e) => {
       if (!this.popovers.isOpen(windowPopover)) return;

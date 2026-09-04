@@ -1,17 +1,16 @@
 /// ツールバーの表示要素 (ライブカプセル・ライブドット・モードバッジ)。
 /// ボタンのクリックは shell が配線する。
 export class Toolbar {
-  readonly capsule: HTMLElement;
+  /// カプセル全体がウィンドウ切替の開閉ボタンになっている
+  readonly capsule: HTMLButtonElement;
   readonly fileName: HTMLElement;
-  readonly windowToggle: HTMLButtonElement;
   private liveDot: HTMLElement;
   private modeBadge: HTMLElement;
   private progress: HTMLElement;
 
   constructor(root: HTMLElement, progress: HTMLElement) {
-    this.capsule = root.querySelector<HTMLElement>(".ink-capsule")!;
+    this.capsule = root.querySelector<HTMLButtonElement>(".ink-capsule")!;
     this.fileName = root.querySelector<HTMLElement>(".ink-filename")!;
-    this.windowToggle = root.querySelector<HTMLButtonElement>(".ink-window-toggle")!;
     this.liveDot = root.querySelector<HTMLElement>(".ink-live-dot")!;
     this.modeBadge = root.querySelector<HTMLElement>(".ink-mode-badge")!;
     this.progress = progress;
