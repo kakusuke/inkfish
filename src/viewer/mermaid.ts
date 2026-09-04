@@ -3,12 +3,22 @@ import type { Mermaid } from "mermaid";
 // ---------- Mermaid ----------
 // mermaid はライブラリ自体がシングルトン(グローバルな設定と連番 id を持つ)なので、
 // ハンドルと適用済み設定はモジュールレベルで共有する。
-//
-// 将来ひとつの document に DocumentViewer を 2 つ以上並べるなら、ここが最初に
-// 問題になる。deterministicIds の連番はライブラリ全体で 1 本なので、同時に描く
-// 2 つのビューアが同じ id を持ち、mermaid が id セレクタで掴む描画先を取り違える。
-// そのときは図ごとに id を前置きする形へ変える必要がある。
 let mermaid: Mermaid | null = null;
+
+// 描画は 1 つずつ順番に行う。ひとつの document に DocumentViewer が複数
+// (タブごとに 1 つ) 載るため、同時に描かせると壊れる:
+//   - deterministicIds の連番はライブラリ全体で 1 本なので、同時に走る 2 つの
+//     描画が同じ id を持ち、mermaid が id セレクタで掴む描画先を取り違える
+//   - initialize() のテーマ設定もライブラリ全体で 1 本なので、Marp のタブと
+//     本文のタブが同時に描くと互いの設定を奪い合う
+// 直列化すればどちらも起きないので、id の付け替えも設定の複製も要らない。
+let queue: Promise<unknown> = Promise.resolve();
+function serialize<T>(task: () => Promise<T>): Promise<T> {
+  // 前の描画が失敗しても列は止めない
+  const run = queue.then(task, task);
+  queue = run.catch(() => {});
+  return run;
+}
 
 /// 図の見せ方を決める文脈。ビューアのインスタンスが渡す。
 export type MermaidContext = {
@@ -33,13 +43,17 @@ const themeFor = (ctx: MermaidContext) =>
 // 本文では等倍なので症状が出ず、HTML ラベル (装飾やリンク) の利点を残す。
 const htmlLabelsFor = (ctx: MermaidContext) => !ctx.marp;
 
-// 直近 initialize() に渡した設定。描き直しが要るかの判定に使う。
-const configKey = (ctx: MermaidContext) => `${themeFor(ctx)}|${htmlLabelsFor(ctx)}`;
+/// 図の見え方を決める設定の同一性キー。ビューアは「自分の SVG がどのキーで
+/// 描かれたか」を持ち、書き出し後に描き直しが要るかの判定に使う。
+export const mermaidConfigKey = (ctx: MermaidContext) =>
+  `${themeFor(ctx)}|${htmlLabelsFor(ctx)}`;
+
+// 直近 initialize() に渡した設定 (ライブラリに今当たっているもの)。
 let appliedConfig: string | null = null;
 
 function initialize(ctx: MermaidContext) {
   if (!mermaid) return;
-  appliedConfig = configKey(ctx);
+  appliedConfig = mermaidConfigKey(ctx);
   const htmlLabels = htmlLabelsFor(ctx);
   mermaid.initialize({
     startOnLoad: false,
@@ -74,29 +88,40 @@ async function getMermaid(ctx: MermaidContext): Promise<Mermaid> {
   return mermaid;
 }
 
-/// 図の設定が今の文脈 (ダーク / 書き出し中 / Marp) と食い違っているか。
-/// 書き出し後の描き直しが要るかの判定に使う。
-export const needsRedraw = (ctx: MermaidContext) =>
-  mermaid !== null && appliedConfig !== configKey(ctx);
-
 /// ブロック内の図を描き、クリックで拡大表示できるようにする。
 /// stale() は「自分より新しい描画が始まったか」。切り離された DOM へ描いて
 /// 出る失敗を本物のエラーと取り違えないよう、要所で確認する。
-export async function runMermaid(
+///
+/// 実際に描いたときは使った設定キーを返す (何も描かなかったときは null)。
+/// 呼び出し側はこれを控えておき、書き出し後の描き直し判定に使う。
+export function runMermaid(
   blocks: HTMLElement[],
   ctx: MermaidContext,
   stale: () => boolean,
   onZoom: (svg: SVGSVGElement) => void,
   onError: (msg: string) => void
-) {
+): Promise<string | null> {
+  // 他のビューアの描画と重ならないよう順番待ちする
+  return serialize(() => runMermaidNow(blocks, ctx, stale, onZoom, onError));
+}
+
+async function runMermaidNow(
+  blocks: HTMLElement[],
+  ctx: MermaidContext,
+  stale: () => boolean,
+  onZoom: (svg: SVGSVGElement) => void,
+  onError: (msg: string) => void
+): Promise<string | null> {
+  // 順番待ちの間に描き直しが始まっていたら描かない
+  if (stale()) return null;
   try {
     const m = await getMermaid(ctx);
-    if (stale()) return;
+    if (stale()) return null;
     // initialize() は次の run() から効くので、描画の直前に当て直す。
-    if (needsRedraw(ctx)) initialize(ctx);
+    if (appliedConfig !== mermaidConfigKey(ctx)) initialize(ctx);
     await m.run({ nodes: blocks });
   } catch (e) {
-    if (stale()) return;
+    if (stale()) return null;
     // 構文エラーのブロックは mermaid がエラー表示に差し替えたうえで
     // 最初のエラーを投げ直してくるので、ここへ来ること自体は珍しくない。
     // 差し替えすら行われず SVG が入らなかったブロックはソースが生のまま
@@ -105,13 +130,16 @@ export async function runMermaid(
     const unrendered = blocks.filter((b) => !b.querySelector("svg")).length;
     if (unrendered) onError(`Mermaid を描画できませんでした (${unrendered} 件)`);
   }
-  if (stale()) return;
+  // 新しい描画に追い越されていたら、描いたことにしない
+  // (呼び出し側が控える設定キーは「今 DOM にある SVG」のものでなければならない)
+  if (stale()) return null;
   for (const block of blocks) {
     const svg = block.querySelector<SVGSVGElement>("svg");
     // 構文エラーの差し替え表示 (.error-icon を含む) は拡大対象外
     if (!svg || svg.querySelector(".error-icon")) continue;
     block.addEventListener("click", () => onZoom(svg));
   }
+  return mermaidConfigKey(ctx);
 }
 
 /// Marp が出力したコードブロックのうち mermaid のものを図の器へ差し替える。

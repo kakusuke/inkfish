@@ -3,7 +3,13 @@ import { SCHEME, resolvePath } from "../shared/paths";
 import { md, enhanceCodeBlocks } from "./markdown";
 import { buildFrontMatterCard, fmTitle, parseFrontMatter } from "./frontmatter";
 import { applyMarpBrowser, fixSlideAspectRatio, isMarpDocument, renderMarp } from "./marp";
-import { extractMermaidBlocks, needsRedraw, runMermaid, type MermaidContext } from "./mermaid";
+import type { MarpCoreBrowser } from "@marp-team/marp-core/browser";
+import {
+  extractMermaidBlocks,
+  mermaidConfigKey,
+  runMermaid,
+  type MermaidContext,
+} from "./mermaid";
 import { Lightbox } from "./lightbox";
 import { FindEngine, type FindState } from "./find";
 
@@ -27,6 +33,10 @@ export type ViewerOptions = {
   onProgress?: (ratio: number) => void;
   onFindUpdate?: (s: FindState) => void;
   onLinkActivate?: (t: LinkTarget) => void;
+  /// 見出しや脚注の id に付ける接頭辞。ひとつの document にビューアを複数
+  /// (タブごとに 1 つ) 載せるときに、文書間で id が衝突しないよう分ける。
+  /// 省略すると前置きしない (単一文書のウィンドウは従来どおりの id になる)。
+  idPrefix?: string;
 };
 
 const MARKUP = `
@@ -57,6 +67,16 @@ export class DocumentViewer {
   // 入るとき prefers-color-scheme を light へ切り替え、生きている DOM 上で change を
   // 発火させる。その通知で再描画すると描き途中の DOM がそのまま紙に乗るため抑止する。
   private exporting = false;
+  // 非アクティブなタブは凍結して再描画を溜める。凍結を解くときに描き直す。
+  // (凍結しないと、テーマ切替でタブの数だけ同時に再描画が走る)
+  private frozen = false;
+  private dirty = false;
+  // 自分の SVG がどの mermaid 設定で描かれたか (図が無ければ null)。
+  // 設定はライブラリ全体で 1 本なので、他のビューアが描くと変わってしまう。
+  // 書き出し後に描き直しが要るかの判定に使うため、自分の分を控えておく。
+  private lastMermaidKey: string | null = null;
+  // Marp の browser() ハンドル。container に束縛されるのでインスタンスごとに持つ。
+  private marpBrowser: MarpCoreBrowser | null = null;
   private themeMedia = matchMedia("(prefers-color-scheme: dark)");
   private onThemeChange = () => {
     // Chromium は印刷レイアウトに入るとき prefers-color-scheme を light へ切り替え、
@@ -64,6 +84,11 @@ export class DocumentViewer {
     // 書き出し中に再描画すると印刷が描き途中の DOM を撮ってしまうので無視する。
     // 書き出しの前後で必要な描き直しは endExport() が自前で行う。
     if (this.exporting) return;
+    // 隠れているタブは描き直さず、表に出るときまで溜める
+    if (this.frozen) {
+      this.dirty = true;
+      return;
+    }
     // 図のテーマの当て直しは render() が描画の直前に行う
     if (this.source) this.render();
   };
@@ -107,7 +132,17 @@ export class DocumentViewer {
     this.source = src;
     this.baseDir = meta.baseDir;
     this.name = meta.name;
+    this.dirty = false;
     await this.render();
+  }
+
+  /// 表示されていない間の再描画を止める。凍結を解くときに、溜まっていれば描き直す。
+  /// タブの切り替えで使う (テーマ変更でタブの数だけ再描画が走るのを防ぐ)。
+  async setFrozen(frozen: boolean) {
+    this.frozen = frozen;
+    if (frozen || !this.dirty) return;
+    this.dirty = false;
+    if (this.source) await this.render();
   }
 
   setScale(v: number) {
@@ -175,12 +210,20 @@ export class DocumentViewer {
     // 図の色を画面用へ戻す (設定の当て直しは render() 側でやる)。書き出し中に
     // OS のテーマが変わっていた場合もここで拾える (その間の change 通知は
     // 上で無視しているため)。図が一つも無い文書では描き直す必要がない。
-    if (needsRedraw(this.mermaidContext())) await this.render();
+    if (this.lastMermaidKey && this.lastMermaidKey !== mermaidConfigKey(this.mermaidContext())) {
+      await this.render();
+    }
   }
 
+  /// 破棄。タブを閉じるときに呼ぶ。root と ライトボックス の DOM を外し、
+  /// document に残る CSS.highlights も片付ける。
   dispose() {
     this.themeMedia.removeEventListener("change", this.onThemeChange);
     window.removeEventListener("resize", this.reportProgress);
+    this.find_.dispose();
+    this.lightbox.dispose();
+    // root の listener はすべて root 自身に付いているのでノードごと回収される
+    this.root.remove();
   }
 
   // ---------- 内部 ----------
@@ -212,6 +255,8 @@ export class DocumentViewer {
     this.lightbox.close();
 
     const scrollTop = this.root.scrollTop;
+    // 今回の描画で図を描かなければ「図なし」に戻る
+    this.lastMermaidKey = null;
     const fm = await parseFrontMatter(this.source);
     if (stale()) return;
     this.marpMode = isMarpDocument(fm, this.source);
@@ -230,7 +275,7 @@ export class DocumentViewer {
       if (stale()) return;
       // 図の器へ差し替えるのは browser() より前。auto-scaling の対象から外す。
       const blocks = extractMermaidBlocks(this.slidesEl);
-      await applyMarpBrowser(this.slidesEl);
+      this.marpBrowser = await applyMarpBrowser(this.slidesEl, this.marpBrowser);
       if (stale()) return;
       fixSlideAspectRatio(this.slidesEl);
       if (blocks.length) {
@@ -240,6 +285,8 @@ export class DocumentViewer {
     } else {
       // md ファイル内の生 HTML 経由の XSS (IPC 到達) を防ぐためサニタイズする
       this.docEl.innerHTML = DOMPurify.sanitize(md.render(fm.body));
+      // Marp 側には当てない。Marp が出す CSS が自分の id を参照しているため。
+      this.applyIdPrefix(this.docEl);
       // Marp は front matter を自分で消費するので、カードを足すのは本文モードだけ。
       // 自前で組んだ要素なのでサニタイズ後に入れて問題ない。
       const card = fm.data && buildFrontMatterCard(fm.data);
@@ -263,14 +310,28 @@ export class DocumentViewer {
     requestAnimationFrame(() => this.root.classList.add("is-refreshing"));
   }
 
-  private drawMermaid(blocks: HTMLElement[], stale: () => boolean) {
-    return runMermaid(
+  private async drawMermaid(blocks: HTMLElement[], stale: () => boolean) {
+    const key = await runMermaid(
       blocks,
       this.mermaidContext(),
       stale,
       (svg) => this.lightbox.open(svg),
       (m) => this.notice(m)
     );
+    if (key) this.lastMermaidKey = key;
+  }
+
+  /// 見出し (markdown-it-anchor) と脚注 (fn1 / fnref1 の固定 id) を
+  /// インスタンスごとの名前空間へ移す。ページ内リンクも合わせて書き換える。
+  private applyIdPrefix(root: HTMLElement) {
+    const p = this.opts.idPrefix;
+    if (!p) return;
+    for (const el of Array.from(root.querySelectorAll<HTMLElement>("[id]"))) {
+      el.id = p + el.id;
+    }
+    for (const a of Array.from(root.querySelectorAll<HTMLAnchorElement>('a[href^="#"]'))) {
+      a.setAttribute("href", `#${p}${a.getAttribute("href")!.slice(1)}`);
+    }
   }
 
   // md ファイルからの相対パス画像を表示できる URL に変換する

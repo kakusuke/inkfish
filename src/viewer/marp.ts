@@ -3,10 +3,14 @@ import type { MarpCoreBrowser } from "@marp-team/marp-core/browser";
 import { FM_RE, type FrontMatter } from "./frontmatter";
 
 // ---------- Marp ----------
-// marp-core も browser() のカスタム要素登録もグローバルな作用なので、
+// marp-core のインスタンスと browser() のカスタム要素登録はグローバルな作用なので、
 // ハンドルはモジュールレベルで共有する。
+//
+// browser() の戻り値だけは共有できない。最初に渡した container に束縛され、
+// update() はその container を測り直すため、ひとつの document に複数の
+// スライドビューア (タブ) が載ると 2 つ目以降の auto-scaling が壊れる。
+// そのため applyMarpBrowser はハンドルを返し、呼び出し側が自分の分を持つ。
 let marp: Marp | null = null;
-let marpBrowser: MarpCoreBrowser | null = null;
 
 async function getMarp(): Promise<Marp> {
   if (!marp) {
@@ -39,9 +43,15 @@ export async function renderMarp(container: HTMLElement, src: string) {
 /// Marp のカスタム要素 (auto-scaling) 登録と、WebKit の
 /// foreignObject スケーリング不具合へのポリフィルを適用する。
 /// これがないと WKWebView ではスライド内容が原寸のままずれて描画される。
-export async function applyMarpBrowser(container: HTMLElement) {
+///
+/// prev は同じ container に対して前回返したハンドル (初回は null)。
+/// 呼び出し側がインスタンスごとに保持する。
+export async function applyMarpBrowser(
+  container: HTMLElement,
+  prev: MarpCoreBrowser | null
+): Promise<MarpCoreBrowser> {
   const { browser } = await import("@marp-team/marp-core/browser");
-  marpBrowser = marpBrowser ? marpBrowser.update() : browser(container);
+  return prev ? prev.update() : browser(container);
 }
 
 /// WKWebView は viewBox だけだと高さを正しく取れないことがあるため、

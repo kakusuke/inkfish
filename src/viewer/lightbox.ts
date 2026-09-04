@@ -130,6 +130,13 @@ export class Lightbox {
     return !this.root.classList.contains("hidden");
   }
 
+  /// 破棄。listener はすべて自分の要素に付いているので、
+  /// ノードを外せばまとめて回収される。
+  dispose() {
+    this.close();
+    this.root.remove();
+  }
+
   open(svg: SVGSVGElement) {
     const vb = svg.viewBox.baseVal;
     const rect = svg.getBoundingClientRect();

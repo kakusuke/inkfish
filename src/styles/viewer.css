@@ -8,6 +8,12 @@
   overflow-y: auto;
   padding-top: var(--ink-chrome-top, 0px);
   scrollbar-gutter: stable both-edges;
+  /* 文字色は中身が自分で持つ。body から継承すると、書き出し中に
+     `.ink-viewer.is-exporting` がトークンをライトへ倒しても、body で
+     すでに計算済みの color は解決し直されず、ダークテーマの薄い文字が
+     そのまま白地の PDF に乗ってしまう (見出しも本文も灰色になる)。
+     ガワを持たないウィンドウで body に色が付いていない場合の保険にもなる。 */
+  color: var(--ink);
 }
 
 .ink-viewer.is-refreshing .ink-doc,
@@ -553,15 +559,9 @@
 }
 
 
-/* 検索マッチ。CSS Custom Highlight API で塗る(DOM を変えないので改行が動かない) */
-::highlight(find-match) {
-  background-color: color-mix(in srgb, var(--accent) 26%, transparent);
-}
-
-::highlight(find-current) {
-  background-color: var(--accent);
-  color: #fff;
-}
+/* 検索マッチ。CSS Custom Highlight API で塗る(DOM を変えないので改行が動かない)。
+   ハイライト名はインスタンスごとの連番なので、規則は find.ts が実行時に生成する
+   (ひとつの document にビューアが複数載っても互いのハイライトを消さないため)。 */
 
 /* ============================================================
    モーション低減

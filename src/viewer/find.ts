@@ -4,18 +4,46 @@
 // WebKit は highlights を消し替えても旧領域を再描画しないことがあるため、
 // 変更後に対象コンテンツを一度だけ同期的に再描画してゴーストを消す。
 //
-// CSS.highlights は document レベルの API でハイライト名も固定なので、
-// ひとつの document に複数の FindEngine を置くことは今はできない。
-// 並べるときは名前をインスタンスごとに分ける必要がある。
+// CSS.highlights は document レベルの API でハイライト名が名前空間そのものなので、
+// ひとつの document に複数の FindEngine が載る (タブごとに 1 つ) 場合、名前を
+// インスタンスごとに分けないと互いのハイライトを消し合う。名前を連番にし、
+// 対応する ::highlight() 規則をここで生成して document に足す。
 const HL_SUPPORTED = typeof CSS !== "undefined" && "highlights" in CSS;
 
 export type FindState = { index: number; total: number };
+
+let SEQ = 0;
+let styleEl: HTMLStyleElement | null = null;
+
+/// インスタンス用の ::highlight() 規則を足す。色はトークン参照なので
+/// ダーク / ライトの切り替えにも書き出し時のライト固定にも追従する。
+/// (静的な CSS に書けないのは、名前が実行時に決まるため)
+function addHighlightRules(match: string, current: string) {
+  if (!HL_SUPPORTED) return;
+  if (!styleEl) {
+    styleEl = document.createElement("style");
+    styleEl.dataset.inkFindHighlights = "";
+    document.head.appendChild(styleEl);
+  }
+  styleEl.textContent += `
+::highlight(${match}) {
+  background-color: color-mix(in srgb, var(--accent) 26%, transparent);
+}
+::highlight(${current}) {
+  background-color: var(--accent);
+  color: #fff;
+}
+`;
+}
 
 export class FindEngine {
   private matches: Range[] = [];
   private index = -1;
   private nudge = false;
   private repaintSeq = 0;
+  // このインスタンス専用のハイライト名
+  private matchName: string;
+  private currentName: string;
 
   /// scroller: スクロールコンテナ (マッチを画面中央へ寄せるのに使う)
   /// roots: 検索対象になりうる要素。表示中のものだけを走査する
@@ -24,7 +52,12 @@ export class FindEngine {
     private activeRoot: () => HTMLElement,
     private repaintTargets: HTMLElement[],
     private onUpdate: (s: FindState) => void
-  ) {}
+  ) {
+    const n = ++SEQ;
+    this.matchName = `find-match-${n}`;
+    this.currentName = `find-current-${n}`;
+    addHighlightRules(this.matchName, this.currentName);
+  }
 
   get state(): FindState {
     return { index: this.index, total: this.matches.length };
@@ -39,7 +72,9 @@ export class FindEngine {
     if (q) {
       const walker = document.createTreeWalker(this.activeRoot(), NodeFilter.SHOW_TEXT, {
         acceptNode(n) {
-          const tag = n.parentElement?.tagName;
+          // SVG 要素の tagName は小文字なので、大文字だけの比較では
+          // mermaid が図に埋め込む <style> の CSS まで検索対象になる
+          const tag = n.parentElement?.tagName?.toUpperCase();
           if (tag === "STYLE" || tag === "SCRIPT") return NodeFilter.FILTER_REJECT;
           return (n.nodeValue ?? "").toLowerCase().includes(q)
             ? NodeFilter.FILTER_ACCEPT
@@ -90,17 +125,26 @@ export class FindEngine {
     for (const el of this.repaintTargets) el.style.filter = "";
   }
 
+  /// 破棄。ハイライトは document 側に残るので必ず外す
+  /// (タブを閉じたあとも塗られたままにならないように)。
+  dispose() {
+    this.clearHighlights();
+    this.clearRepaint();
+    this.matches = [];
+    this.index = -1;
+  }
+
   private clearHighlights() {
     if (!HL_SUPPORTED) return;
-    CSS.highlights.delete("find-match");
-    CSS.highlights.delete("find-current");
+    CSS.highlights.delete(this.matchName);
+    CSS.highlights.delete(this.currentName);
   }
 
   private applyHighlights(scroll: boolean) {
     if (!HL_SUPPORTED) return;
     if (this.matches.length) {
-      CSS.highlights.set("find-match", new Highlight(...this.matches));
-      CSS.highlights.set("find-current", new Highlight(this.matches[this.index]));
+      CSS.highlights.set(this.matchName, new Highlight(...this.matches));
+      CSS.highlights.set(this.currentName, new Highlight(this.matches[this.index]));
     } else {
       this.clearHighlights();
     }
