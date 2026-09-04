@@ -1,8 +1,9 @@
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
-use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
@@ -15,28 +16,56 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder
 /// 通常形式 (`C:\dir\doc.md`) に変換する (260 文字超や予約名は verbatim のまま)。
 /// 非 Windows では `std::fs::canonicalize` と同じ。
 ///
-/// 台帳 (ShownFiles) の突き合わせのため、正規化は全箇所でこの関数に揃える。
+/// 台帳 (OpenTabs) の突き合わせのため、正規化は全箇所でこの関数に揃える。
 fn canonicalize(path: impl AsRef<Path>) -> std::io::Result<PathBuf> {
     dunce::canonicalize(path)
 }
 
-/// ウィンドウごとのアクティブな watcher (label -> watcher)。
-/// 同じウィンドウが別ファイルを監視すると古い watcher は drop され解除される。
-#[derive(Default)]
-struct WatchState(Mutex<HashMap<String, RecommendedWatcher>>);
+/// ウィンドウ 1 つぶんの監視。
+///
+/// notify の watcher は 1 つで複数のパスを監視できるので、そのウィンドウが
+/// 開いているタブの親ディレクトリをまとめて 1 つの watcher に載せる。
+/// (ファイル自体ではなく親を見るのは、エディタの atomic save が rename で
+/// 差し替えるため。対象パスの絞り込みは通知側で行う)
+struct WindowWatch {
+    watcher: RecommendedWatcher,
+    /// 今 watch しているディレクトリ。タブが変わったときの差分更新に使う。
+    dirs: HashSet<PathBuf>,
+    /// 変更を通知したい対象ファイル。watcher のクロージャが読むので Arc。
+    files: Arc<Mutex<HashSet<PathBuf>>>,
+}
 
-/// 各ウィンドウが現在表示しているファイル (label -> canonical path)。
+/// ウィンドウごとの監視 (label -> WindowWatch)。
+/// エントリを落とすと watcher が drop され、OS 側の監視も解除される。
+#[derive(Default)]
+struct WatchState(Mutex<HashMap<String, WindowWatch>>);
+
+/// ウィンドウが開いているタブ 1 つ。
+#[derive(Clone)]
+struct Tab {
+    /// 正規化済みの絶対パス
+    path: PathBuf,
+    /// front matter の title かファイル名。ウィンドウ切替の一覧に出す。
+    caption: String,
+}
+
+/// ウィンドウが開いているタブの列と、そのうちどれを選んでいるか。
+#[derive(Clone, Default)]
+struct WindowTabs {
+    tabs: Vec<Tab>,
+    active: usize,
+}
+
+/// 各ウィンドウが開いているタブ (label -> タブ列)。
 /// 「同じファイルは同じウィンドウ」を保証するための台帳。
+/// 単一文書のウィンドウはタブ 1 つ、プロジェクトウィンドウは 0 個以上。
 #[derive(Default)]
-struct ShownFiles(Mutex<HashMap<String, PathBuf>>);
+struct OpenTabs(Mutex<HashMap<String, WindowTabs>>);
 
-/// 各ウィンドウのツールバーに出ているキャプション (label -> caption)。
-/// front matter の title があればそれ、なければファイル名。
-/// ウィンドウ切替の一覧で「今どの文書を見ている窓か」を出すために持つ。
-/// タイトル文字列から " — Inkfish" を剥がす手もあるが、表示の決め方を
-/// フロント側の一箇所 (applyCaption) に閉じておきたいので登録させる。
+/// プロジェクトウィンドウが開いているルートディレクトリ (label -> root)。
+/// ここに載っている label が「プロジェクトウィンドウ」の定義でもある。
 #[derive(Default)]
-struct WindowCaptions(Mutex<HashMap<String, String>>);
+struct ProjectRoots(Mutex<HashMap<String, PathBuf>>);
 
 /// ウィンドウが起動時に開くべきファイル (label -> path)。
 /// WebView の JS が立ち上がる前に届いた分をここに保持し、
@@ -55,124 +84,212 @@ fn read_md_file(path: String) -> Result<String, String> {
     std::fs::read_to_string(&path).map_err(|e| e.to_string())
 }
 
-/// エディタの atomic save (rename で差し替え) を拾うため、
-/// ファイル自体ではなく親ディレクトリを監視して対象パスだけ通知する。
-/// 通知は監視を要求したウィンドウにだけ届く。
+/// このウィンドウが開いているファイルの変更監視を張り直す。
+///
+/// エディタの atomic save (rename で差し替え) を拾うため、ファイル自体ではなく
+/// 親ディレクトリを監視し、通知は対象パスだけに絞る。タブが増減するたびに
+/// 呼ばれるので、watcher は作り直さずディレクトリを差分で足し引きする。
+///
+/// 通知 (`md:changed`) は監視を要求したウィンドウにだけ、変更されたパスを
+/// 添えて届く。1 ウィンドウが複数のファイルを開くため、どれが変わったかを
+/// 受け側が判別できる必要がある。
 #[tauri::command]
-fn watch_file(
+fn watch_files(
     app: AppHandle,
     window: tauri::WebviewWindow,
     state: State<'_, WatchState>,
-    path: String,
+    paths: Vec<String>,
 ) -> Result<(), String> {
-    let target = canonicalize(&path).map_err(|e| e.to_string())?;
-    let dir = target
-        .parent()
-        .ok_or("親ディレクトリが見つかりません")?
-        .to_path_buf();
+    let targets: Vec<PathBuf> = paths.iter().filter_map(|p| canonicalize(p).ok()).collect();
+    let dirs: HashSet<PathBuf> = targets
+        .iter()
+        .filter_map(|p| p.parent().map(|d| d.to_path_buf()))
+        .collect();
+    let files: HashSet<PathBuf> = targets.into_iter().collect();
 
     let label = window.label().to_string();
-    let emit_label = label.clone();
-    let watched = target.clone();
-    let mut watcher =
-        notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-            if let Ok(event) = res {
-                use notify::EventKind::*;
-                if matches!(event.kind, Create(_) | Modify(_) | Remove(_))
-                    && event.paths.iter().any(|p| p == &watched)
-                {
-                    let _ = app.emit_to(emit_label.as_str(), "md:changed", ());
-                }
-            }
-        })
-        .map_err(|e| e.to_string())?;
+    let mut map = state.0.lock().unwrap();
 
-    watcher
-        .watch(&dir, RecursiveMode::NonRecursive)
-        .map_err(|e| e.to_string())?;
+    let entry = match map.entry(label.clone()) {
+        Entry::Occupied(e) => e.into_mut(),
+        Entry::Vacant(v) => {
+            let shared: Arc<Mutex<HashSet<PathBuf>>> = Arc::new(Mutex::new(HashSet::new()));
+            let watched = Arc::clone(&shared);
+            let emit_label = label.clone();
+            let watcher = notify::recommended_watcher(
+                move |res: notify::Result<notify::Event>| {
+                    let Ok(event) = res else { return };
+                    use notify::EventKind::*;
+                    if !matches!(event.kind, Create(_) | Modify(_) | Remove(_)) {
+                        return;
+                    }
+                    let set = watched.lock().unwrap();
+                    for path in event.paths.iter().filter(|p| set.contains(*p)) {
+                        let _ = app.emit_to(
+                            emit_label.as_str(),
+                            "md:changed",
+                            path.to_string_lossy().into_owned(),
+                        );
+                    }
+                },
+            )
+            .map_err(|e| e.to_string())?;
+            v.insert(WindowWatch {
+                watcher,
+                dirs: HashSet::new(),
+                files: shared,
+            })
+        }
+    };
 
-    state.0.lock().unwrap().insert(label, watcher);
+    // 監視ディレクトリを差分更新する (先に集めてから触るのは、
+    // dirs を読みながら watcher と dirs を書き換えられないため)
+    let gone: Vec<PathBuf> = entry.dirs.difference(&dirs).cloned().collect();
+    for dir in gone {
+        let _ = entry.watcher.unwatch(&dir);
+        entry.dirs.remove(&dir);
+    }
+    let added: Vec<PathBuf> = dirs.difference(&entry.dirs).cloned().collect();
+    for dir in added {
+        entry
+            .watcher
+            .watch(&dir, RecursiveMode::NonRecursive)
+            .map_err(|e| e.to_string())?;
+        entry.dirs.insert(dir);
+    }
+    *entry.files.lock().unwrap() = files;
     Ok(())
 }
 
-/// ファイルの表示に成功したウィンドウが自分の表示中ファイルを登録する。
+/// フロントが自分のタブ構成を丸ごと申告する。
+///
+/// タブの追加・削除・並べ替え・選択の移動・キャプションの更新をこれ 1 つで扱う。
+/// 差分ではなく全体を渡させるのは、そのほうが冪等で取りこぼしが無いため。
+/// 単一文書のウィンドウはタブ 1 つとして申告する。
 #[tauri::command]
-fn register_shown_file(window: tauri::WebviewWindow, path: String) {
+fn set_window_tabs(window: tauri::WebviewWindow, tabs: Vec<TabInput>, active: usize) {
     let app = window.app_handle();
-    let canon = canonicalize(&path).unwrap_or_else(|_| PathBuf::from(&path));
-    app.state::<ShownFiles>()
-        .0
-        .lock()
-        .unwrap()
-        .insert(window.label().to_string(), canon);
-    app.state::<PendingOpen>()
-        .0
-        .lock()
-        .unwrap()
-        .remove(window.label());
+    let tabs: Vec<Tab> = tabs
+        .into_iter()
+        .map(|t| Tab {
+            // 台帳の突き合わせのため必ず正規化する。解決できないパス
+            // (削除された等) はそのまま入れて、少なくとも一覧には出す。
+            path: canonicalize(&t.path).unwrap_or_else(|_| PathBuf::from(&t.path)),
+            caption: t.caption,
+        })
+        .collect();
+    let empty = tabs.is_empty();
+
+    app.state::<OpenTabs>().0.lock().unwrap().insert(
+        window.label().to_string(),
+        WindowTabs { tabs, active },
+    );
+    // 起動時のパスを受け取り終えたら PendingOpen から外す
+    // (残っていると再読み込みで二重に開く)
+    if !empty {
+        app.state::<PendingOpen>()
+            .0
+            .lock()
+            .unwrap()
+            .remove(window.label());
+    }
 }
 
-/// ウィンドウ切替の一覧に出す 1 行。
+#[derive(serde::Deserialize)]
+struct TabInput {
+    path: String,
+    caption: String,
+}
+
+/// ウィンドウ切替の一覧に出す 1 行。タブはこの下にネストして並ぶ。
 #[derive(serde::Serialize)]
 struct WindowEntry {
     label: String,
-    /// front matter の title かファイル名
+    /// "file" (単一文書) か "project" (ツリーペイン + タブ)
+    kind: &'static str,
+    /// 見出し。単一文書なら文書のキャプション、プロジェクトならルートのパス
     caption: String,
-    /// ファイル名 (caption が title のときの補助表示)
+    /// 2 行目に出す補助表示 (単一文書ならファイル名、プロジェクトなら空)
     name: String,
-    /// 2 行目に出す親ディレクトリ
+    /// 2 行目に出すディレクトリ
     dir: String,
     /// 呼び出し元のウィンドウ自身か
     current: bool,
+    tabs: Vec<TabEntry>,
 }
 
-/// フロントが自分のキャプションを登録する。render のたびに呼ばれる。
-#[tauri::command]
-fn set_window_caption(window: tauri::WebviewWindow, caption: String) {
-    window
-        .app_handle()
-        .state::<WindowCaptions>()
-        .0
-        .lock()
-        .unwrap()
-        .insert(window.label().to_string(), caption);
+/// 一覧のタブ 1 行。
+#[derive(serde::Serialize)]
+struct TabEntry {
+    path: String,
+    caption: String,
+    name: String,
+    dir: String,
+    /// そのウィンドウで今選ばれているタブか
+    current: bool,
 }
 
-/// ファイルを開いているウィンドウの一覧を返す。
+/// 開いているウィンドウの一覧を、それぞれのタブつきで返す。
 ///
-/// 台帳 (ShownFiles) を引くので、まだ何も表示していない窓は出てこない。
-/// 並びは開いた順 (main が先頭、以降は viewer-N の採番順)。
+/// 単一文書のウィンドウは何か開いているものだけ (台帳が根拠)、
+/// プロジェクトウィンドウはタブが 0 でも出す (ルートを開いているため)。
+/// 並びは main → viewer-N → project-N の採番順 = 開いた順。
 #[tauri::command]
 fn list_open_windows(app: AppHandle, window: tauri::WebviewWindow) -> Vec<WindowEntry> {
-    let shown = app.state::<ShownFiles>().0.lock().unwrap().clone();
-    let captions = app.state::<WindowCaptions>().0.lock().unwrap().clone();
+    let open = app.state::<OpenTabs>().0.lock().unwrap().clone();
+    let roots = app.state::<ProjectRoots>().0.lock().unwrap().clone();
     let live = app.webview_windows();
 
-    let mut entries: Vec<WindowEntry> = shown
-        .into_iter()
-        // 閉じた直後などで台帳に残っていても実体が無いものは出さない
-        .filter(|(label, _)| live.contains_key(label))
-        .map(|(label, path)| {
-            let name = path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            let dir = path
-                .parent()
-                .map(|d| d.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            let caption = captions
-                .get(&label)
-                .filter(|c| !c.is_empty())
-                .cloned()
-                .unwrap_or_else(|| name.clone());
-            WindowEntry {
-                current: label == window.label(),
-                label,
+    let mut entries: Vec<WindowEntry> = live
+        .keys()
+        .filter_map(|label| {
+            let root = roots.get(label);
+            let wt = open.get(label).cloned().unwrap_or_default();
+            // 何も開いていない単一文書ウィンドウは一覧に出さない
+            if root.is_none() && wt.tabs.is_empty() {
+                return None;
+            }
+            let tabs: Vec<TabEntry> = wt
+                .tabs
+                .iter()
+                .enumerate()
+                .map(|(i, t)| TabEntry {
+                    path: t.path.to_string_lossy().into_owned(),
+                    caption: t.caption.clone(),
+                    name: file_name_of(&t.path),
+                    dir: parent_of(&t.path),
+                    current: i == wt.active,
+                })
+                .collect();
+
+            let (kind, caption, name, dir) = match root {
+                Some(root) => (
+                    "project",
+                    root.to_string_lossy().into_owned(),
+                    String::new(),
+                    root.to_string_lossy().into_owned(),
+                ),
+                None => {
+                    let t = &wt.tabs[wt.active.min(wt.tabs.len() - 1)];
+                    let name = file_name_of(&t.path);
+                    let caption = if t.caption.is_empty() {
+                        name.clone()
+                    } else {
+                        t.caption.clone()
+                    };
+                    ("file", caption, name, parent_of(&t.path))
+                }
+            };
+
+            Some(WindowEntry {
+                current: *label == window.label(),
+                label: label.clone(),
+                kind,
                 caption,
                 name,
                 dir,
-            }
+                tabs,
+            })
         })
         .collect();
 
@@ -180,12 +297,27 @@ fn list_open_windows(app: AppHandle, window: tauri::WebviewWindow) -> Vec<Window
     entries
 }
 
-/// ラベルから開いた順を求める。main は必ず先頭、以降は viewer-N の N 順。
+fn file_name_of(p: &Path) -> String {
+    p.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+fn parent_of(p: &Path) -> String {
+    p.parent()
+        .map(|d| d.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// ラベルから開いた順を求める。main は必ず先頭、以降は採番順。
 fn window_order(label: &str) -> (u8, usize) {
-    match label.strip_prefix("viewer-") {
-        Some(n) => (1, n.parse().unwrap_or(usize::MAX)),
-        None => (0, 0),
+    if let Some(n) = label.strip_prefix("viewer-") {
+        return (1, n.parse().unwrap_or(usize::MAX));
     }
+    if let Some(n) = label.strip_prefix("project-") {
+        return (2, n.parse().unwrap_or(usize::MAX));
+    }
+    (0, 0)
 }
 
 /// 一覧から選ばれたウィンドウを前面化する。
@@ -195,46 +327,80 @@ fn focus_window_by_label(app: AppHandle, label: String) {
 }
 
 /// ファイルを開くときの共通ルール:
-/// - どこかのウィンドウが表示中 → そのウィンドウを前面化 ("focused")
-/// - 呼び出し元がまだ何も表示していない → その場で表示させる ("load-here")
-/// - それ以外 → 新しいウィンドウで開く ("new-window")
+/// - どこかのウィンドウがタブで開いている → その窓を前面化してタブを選ばせる ("focused")
+/// - 呼び出し元がプロジェクトウィンドウ → その場でタブとして開かせる ("load-here")
+/// - 呼び出し元がまだ何も開いていない → その場で開かせる ("load-here")
+/// - それ以外 → 新しい単一文書ウィンドウで開く ("new-window")
+///
+/// プロジェクトウィンドウの場合にルート配下かどうかを問わないのは、
+/// 「本文のリンクはその窓のタブで開く」という約束を素直に守るため。
+///
+/// 正規化したパスを返すのは、フロントが持つ「今開いているパス」を
+/// 台帳と同じ表記に揃えるため (md:changed の突き合わせに使う)。
 ///
 /// ウィンドウ生成はメインスレッドへのディスパッチを伴うため、
 /// デッドロックを避けて async コマンドにしている。
+#[derive(serde::Serialize)]
+struct OpenOutcome {
+    /// "focused" | "load-here" | "new-window"
+    action: &'static str,
+    /// 正規化済みの絶対パス
+    path: String,
+}
+
 #[tauri::command]
 async fn open_path(
     app: AppHandle,
     window: tauri::WebviewWindow,
     path: String,
-) -> Result<String, String> {
+) -> Result<OpenOutcome, String> {
     let canon = canonicalize(&path).map_err(|e| format!("ファイルが見つかりません: {e}"))?;
+    let canon_str = canon.to_string_lossy().into_owned();
 
     let existing = {
-        let shown = app.state::<ShownFiles>();
-        let map = shown.0.lock().unwrap();
+        let open = app.state::<OpenTabs>();
+        let map = open.0.lock().unwrap();
         map.iter()
-            .find(|(_, p)| **p == canon)
+            .find(|(_, wt)| wt.tabs.iter().any(|t| t.path == canon))
             .map(|(l, _)| l.clone())
     };
     if let Some(label) = existing {
         if label != window.label() {
             focus_window(&app, &label);
         }
-        return Ok("focused".into());
+        // 相手の窓に「このタブを選べ」と伝える (自分の窓でも同じ)
+        let _ = app.emit_to(label.as_str(), "md:activate", canon_str.clone());
+        return Ok(OpenOutcome {
+            action: "focused",
+            path: canon_str,
+        });
     }
 
-    let caller_is_empty = !app
-        .state::<ShownFiles>()
+    let is_project = app
+        .state::<ProjectRoots>()
         .0
         .lock()
         .unwrap()
         .contains_key(window.label());
-    if caller_is_empty {
-        return Ok("load-here".into());
+    let caller_is_empty = app
+        .state::<OpenTabs>()
+        .0
+        .lock()
+        .unwrap()
+        .get(window.label())
+        .is_none_or(|wt| wt.tabs.is_empty());
+    if is_project || caller_is_empty {
+        return Ok(OpenOutcome {
+            action: "load-here",
+            path: canon_str,
+        });
     }
 
-    spawn_viewer_window(&app, canon.to_string_lossy().into_owned())?;
-    Ok("new-window".into())
+    spawn_viewer_window(&app, canon_str.clone())?;
+    Ok(OpenOutcome {
+        action: "new-window",
+        path: canon_str,
+    })
 }
 
 /// 起動時に開くべきファイルを返す。
@@ -258,7 +424,7 @@ fn get_startup_file(
 /// - 開けないものやディレクトリは黙って捨てる。GUI アプリなので
 ///   argv のエラーを出す先がない (release の Windows はコンソールを持たない)
 /// - 同じファイルの重複は落とす。`inkfish a.md a.md` で 2 窓に同じ文書が
-///   出ると「同じファイルは同じウィンドウ」(ShownFiles) が崩れる
+///   出ると「同じファイルは同じウィンドウ」(OpenTabs) が崩れる
 fn cli_files() -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = Vec::new();
     let mut only_paths = false;
@@ -641,12 +807,16 @@ fn spawn_viewer_window_at(
 
 /// Finder / Dock 経由で届いたオープン要求を適切なウィンドウに振り分ける。
 fn open_from_system(app: &AppHandle, path: PathBuf) {
-    let shown_map: HashMap<String, PathBuf> =
-        app.state::<ShownFiles>().0.lock().unwrap().clone();
+    let open_map: HashMap<String, WindowTabs> =
+        app.state::<OpenTabs>().0.lock().unwrap().clone();
 
     // 既に表示しているウィンドウがあれば前面化するだけ
-    if let Some((label, _)) = shown_map.iter().find(|(_, p)| **p == path) {
+    if let Some((label, _)) = open_map
+        .iter()
+        .find(|(_, wt)| wt.tabs.iter().any(|t| t.path == path))
+    {
         focus_window(app, label);
+        let _ = app.emit_to(label.as_str(), "md:activate", path.to_string_lossy().into_owned());
         return;
     }
 
@@ -664,10 +834,17 @@ fn open_from_system(app: &AppHandle, path: PathBuf) {
         return;
     }
 
-    // まだ何も表示していないウィンドウ(起動直後など)があればそこで開く
+    // まだ何も表示していないウィンドウ(起動直後など)があればそこで開く。
+    // プロジェクトウィンドウは「タブ 0 でもルートを開いている窓」なので
+    // 空とは見なさない (でないと Finder のオープンを永久に吸い込んでしまう)。
+    let project_labels: HashSet<String> =
+        app.state::<ProjectRoots>().0.lock().unwrap().keys().cloned().collect();
     let empty = windows
         .keys()
-        .find(|l| !shown_map.contains_key(*l))
+        .find(|l| {
+            !project_labels.contains(*l)
+                && open_map.get(*l).is_none_or(|wt| wt.tabs.is_empty())
+        })
         .cloned();
     if let Some(label) = empty {
         // JS 起動前なら get_startup_file、起動後なら md:open のどちらかで拾われる
@@ -689,9 +866,9 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(WatchState::default())
-        .manage(ShownFiles::default())
+        .manage(OpenTabs::default())
         .manage(PendingOpen::default())
-        .manage(WindowCaptions::default())
+        .manage(ProjectRoots::default())
         .setup(|app| {
             // CLI 引数のファイルを振り分ける。config 宣言の main ウィンドウは
             // build 中に作られているので、この時点で存在する。
@@ -730,12 +907,11 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             read_md_file,
-            watch_file,
+            watch_files,
             open_in_editor,
             open_path,
-            register_shown_file,
             get_startup_file,
-            set_window_caption,
+            set_window_tabs,
             list_open_windows,
             focus_window_by_label,
             export_pdf
@@ -763,7 +939,7 @@ pub fn run() {
             ..
         } => {
             app_handle
-                .state::<ShownFiles>()
+                .state::<OpenTabs>()
                 .0
                 .lock()
                 .unwrap()
@@ -781,7 +957,7 @@ pub fn run() {
                 .unwrap()
                 .remove(&label);
             app_handle
-                .state::<WindowCaptions>()
+                .state::<ProjectRoots>()
                 .0
                 .lock()
                 .unwrap()

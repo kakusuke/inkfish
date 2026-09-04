@@ -18,10 +18,9 @@ import {
   openFileDialog,
   pickDroppedMarkdown,
   readMdFile,
-  registerShownFile,
   requestOpen,
-  setWindowCaption,
-  watchFile,
+  setWindowTabs,
+  watchFiles,
 } from "../chrome/files";
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
@@ -130,7 +129,10 @@ export class AppShell {
     // (そうしないと複数ウィンドウ時に全ウィンドウが PDF 書き出しや再読込を実行する)
     const webview = getCurrentWebview();
 
-    webview.listen("md:changed", () => {
+    // ペイロードは変更されたファイルの正規化済みパス。この窓は 1 ファイルしか
+    // 持たないが、監視は親ディレクトリ単位なので他のファイルの通知も届く。
+    webview.listen<string>("md:changed", (ev) => {
+      if (ev.payload !== this.currentPath) return;
       clearTimeout(this.reloadTimer);
       this.reloadTimer = setTimeout(() => this.reload(), 60);
     });
@@ -193,7 +195,8 @@ export class AppShell {
   private async openPath(path: string) {
     try {
       const outcome = await requestOpen(path);
-      if (outcome === "load-here") await this.loadFile(path);
+      // 正規化済みのパスで読む (台帳と表記を揃えて md:changed と突き合わせる)
+      if (outcome.action === "load-here") await this.loadFile(outcome.path);
     } catch (e) {
       this.toast.show(String(e));
     }
@@ -215,8 +218,10 @@ export class AppShell {
     this.toolbar.showCapsule();
     $('[data-act="edit"]').classList.remove("hidden");
     pushRecent(path, this.currentName);
-    // 「同じファイルは同じウィンドウ」の台帳に自分を登録する
-    registerShownFile(path).catch(() => {});
+    // 「同じファイルは同じウィンドウ」の台帳に先に載せる。front matter の
+    // title があれば applyCaption が描画中に上書きするが、描画で何かあっても
+    // 台帳が空にならないよう、ここでファイル名で登録しておく。
+    setWindowTabs([{ path, caption: this.currentName }], 0).catch(() => {});
 
     await this.viewer.setSource(source, {
       baseDir: dirname(path),
@@ -226,7 +231,7 @@ export class AppShell {
     this.viewer.scrollToTop();
 
     try {
-      await watchFile(path);
+      await watchFiles([path]);
       this.toolbar.setWatchState("watching");
     } catch (e) {
       this.toolbar.setWatchState("error");
@@ -265,8 +270,11 @@ export class AppShell {
     const caption = title || name;
     this.toolbar.setCaption(caption, name);
     getCurrentWindow().setTitle(`${caption} — Inkfish`);
-    // ウィンドウ切替の一覧が同じ文字列を出せるように登録する
-    setWindowCaption(caption).catch(() => {});
+    // 「同じファイルは同じウィンドウ」の台帳とウィンドウ切替の一覧へ、
+    // タブ 1 つぶんとして申告する
+    if (this.currentPath) {
+      setWindowTabs([{ path: this.currentPath, caption }], 0).catch(() => {});
+    }
   }
 
   private async editCurrent() {
