@@ -138,6 +138,15 @@
   font-family: var(--sans);
 }
 
+/* ウィンドウの下にネストするタブの行 */
+.ink-window-row.is-tab {
+  padding-left: 30px;
+}
+
+.ink-window-row.is-tab .ink-window-caption {
+  font-weight: 400;
+}
+
 .ink-window-row.is-active {
   background: var(--accent-soft);
 }

@@ -879,14 +879,18 @@ fn close_self(window: tauri::WebviewWindow) {
 
 /// 起動時に開くべきファイルを返す。
 /// Finder 経由・CLI 引数・新規ウィンドウの割り当てはいずれも PendingOpen に
-/// 積まれているので、ここは取り出すだけ。振り分けは setup と
-/// open_from_system に集めてある。
+/// 積まれているので、ここは覗くだけ。振り分けは setup と open_from_system に
+/// 集めてある。
+///
+/// **取り出して消さない**のが要点。消すのは set_window_tabs (= 実際に開けた
+/// とき)。ここで消してしまうと、「読み込み中でまだタブが無い」窓が
+/// close_empty_windows から見て空に見え、閉じられてしまう。
 #[tauri::command]
 fn get_startup_file(
     window: tauri::WebviewWindow,
     pending: State<'_, PendingOpen>,
 ) -> Option<String> {
-    pending.0.lock().unwrap().remove(window.label())
+    pending.0.lock().unwrap().get(window.label()).cloned()
 }
 
 /// プロジェクトウィンドウが起動時に開くルートを返す。
