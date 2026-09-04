@@ -13,7 +13,10 @@ import { fillSettings, openInEditor, wireSettings } from "../chrome/settings";
 import { pushRecent, renderRecents } from "./recents";
 import { exportPdf } from "../chrome/pdf";
 import { WindowMenu } from "../chrome/windowmenu";
+import { makeWindowDraggable } from "../chrome/windowdrag";
 import {
+  adoptTab,
+  closeSelf,
   isMarkdownPath,
   openDirDialog,
   openDirWindow,
@@ -117,6 +120,12 @@ export class AppShell {
     window.addEventListener("keydown", (e) => {
       if (!this.popovers.isOpen(windowPopover)) return;
       if (this.windowMenu.handleKey(e.key)) e.preventDefault();
+    });
+
+    // カプセルを掴むとウィンドウ自体が動き、プロジェクトウィンドウの上で
+    // 離すとそのタブとして取り込まれる。
+    makeWindowDraggable(this.toolbar.capsule, {
+      onDrop: (label) => void this.dockInto(label),
     });
 
     $('[data-act="open"]').addEventListener("click", () => this.pickFile());
@@ -292,6 +301,17 @@ export class AppShell {
     // タブ 1 つぶんとして申告する
     if (this.currentPath) {
       setWindowTabs([{ path: this.currentPath, caption }], 0).catch(() => {});
+    }
+  }
+
+  /// 今開いている文書をプロジェクトウィンドウのタブとして渡し、この窓を畳む。
+  private async dockInto(label: string) {
+    if (!this.currentPath) return;
+    try {
+      await adoptTab(label, this.currentPath);
+      await closeSelf();
+    } catch (e) {
+      this.toast.show(`渡せませんでした: ${e}`);
     }
   }
 

@@ -11,6 +11,7 @@ import { fillSettings, openInEditor, wireSettings } from "../chrome/settings";
 import { exportPdf } from "../chrome/pdf";
 import { WindowMenu } from "../chrome/windowmenu";
 import {
+  adoptTab,
   isMarkdownPath,
   openDirDialog,
   openDirWindow,
@@ -18,7 +19,10 @@ import {
   openFileDialog,
   requestOpen,
   setWindowTabs,
+  tearOutTab,
   watchFiles,
+  windowAt,
+  windowRects,
 } from "../chrome/files";
 import { shortenPath } from "../shared/paths";
 import { DocTab } from "./tab";
@@ -73,6 +77,7 @@ export class ProjectShell {
       onSelect: (id) => this.activate(id),
       onClose: (id) => this.closeTab(id),
       onReorder: (ids) => this.reorder(ids),
+      onDropOutside: (id, x, y) => void this.dropOutside(id, x, y),
     });
 
     this.findBar = new FindBar($(".ink-findbar"), {
@@ -221,6 +226,16 @@ export class ProjectShell {
 
     // 起動後に届いたオープン要求 / 既に開いているタブの選択要求
     webview.listen<string>("md:open", (ev) => {
+      if (ev.payload) void this.openTab(ev.payload);
+    });
+    // 別の窓がこの窓の上にドラッグされてきた (受け入れ可能なことを示す)
+    webview.listen<boolean>("dock:hover", (ev) => {
+      document.body.classList.toggle("is-dock-target", ev.payload);
+    });
+
+    // 他のウィンドウから渡されたタブ
+    webview.listen<string>("tab:adopt", (ev) => {
+      document.body.classList.remove("is-dock-target");
       if (ev.payload) void this.openTab(ev.payload);
     });
     webview.listen<string>("md:activate", (ev) => {
@@ -372,6 +387,45 @@ export class ProjectShell {
       for (const tab of this.tabs) tab.setActive(tab.id === this.activeId);
     }
     this.syncTabs();
+  }
+
+  /// タブ列の外で離された。落とした先で振る舞いが変わる:
+  ///   - 自分のウィンドウの中 → 何もしない (取り消し)
+  ///   - 別のウィンドウの中   → 相手に渡してこちらのタブを閉じる
+  ///   - どの窓の上でもない   → その場所に単一文書ウィンドウとして切り離す
+  private async dropOutside(id: string, x: number, y: number) {
+    const tab = this.tabs.find((t) => t.id === id);
+    if (!tab) return;
+
+    let target: string | null = null;
+    let ownWindow = false;
+    try {
+      const rects = await windowRects();
+      const hit = windowAt(rects, x, y);
+      const self = getCurrentWindow().label;
+      ownWindow = hit?.label === self;
+      // 単一文書ウィンドウはタブを持てないので渡す相手にしない
+      if (hit && hit.label !== self && hit.kind === "project") target = hit.label;
+    } catch (e) {
+      this.toast.show(`ウィンドウの位置を取れませんでした: ${e}`);
+      return;
+    }
+
+    // 自分の窓の上で離した (列の外) なら取り消し。並びは崩れているので描き直す
+    if (ownWindow && !target) {
+      this.syncTabs();
+      return;
+    }
+
+    try {
+      if (target) await adoptTab(target, tab.path);
+      else await tearOutTab(tab.path, x, y);
+    } catch (e) {
+      this.toast.show(String(e));
+      this.syncTabs();
+      return;
+    }
+    this.closeTab(id);
   }
 
   private reorder(ids: string[]) {

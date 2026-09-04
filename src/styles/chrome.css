@@ -36,6 +36,11 @@
   border-color: var(--ink-2);
 }
 
+/* カプセルを掴んでウィンドウを動かしている間 */
+.ink-capsule.is-window-dragging {
+  box-shadow: var(--shadow);
+}
+
 .ink-capsule[aria-expanded="true"] {
   background: var(--accent-soft);
   border-color: var(--accent);

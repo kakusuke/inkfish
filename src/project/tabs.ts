@@ -13,6 +13,9 @@ export type StripHooks = {
   onClose: (id: string) => void;
   /// 並べ替えが確定した。引数は新しい順序の id 列。
   onReorder: (ids: string[]) => void;
+  /// タブ列の外で離された。座標はデスクトップ上の位置 (論理ピクセル)。
+  /// 切り離すか別の窓へ渡すかの判断はガワが行う。
+  onDropOutside: (id: string, screenX: number, screenY: number) => void;
 };
 
 /// タブを掴んだときの状態。
@@ -21,7 +24,18 @@ type Drag = {
   el: HTMLElement;
   startX: number;
   moved: boolean;
+  /// このウィンドウの client 原点 (デスクトップ座標)。
+  /// pointer イベントの screenX - clientX で求まる。窓の外へ出たかの
+  /// 判定に使う (window.screenX は当てにならないので使わない)。
+  originX: number;
+  originY: number;
+  /// 今カーソルがウィンドウの外にいるか
+  outside: boolean;
 };
+
+/// この距離だけタブ列から縦に離れたら「持ち出し」と見なす。
+/// 列の中で少し上下にぶれただけで切り離されないための余裕。
+const DETACH_MARGIN = 44;
 
 /// プロジェクトウィンドウのタブ列。
 ///
@@ -120,7 +134,15 @@ export class TabStrip {
     const el = target.closest<HTMLElement>("[data-tab]");
     if (!el) return;
     el.setPointerCapture(e.pointerId);
-    this.drag = { id: el.dataset.tab!, el, startX: e.clientX, moved: false };
+    this.drag = {
+      id: el.dataset.tab!,
+      el,
+      startX: e.clientX,
+      moved: false,
+      originX: e.screenX - e.clientX,
+      originY: e.screenY - e.clientY,
+      outside: false,
+    };
   }
 
   private onMove(e: PointerEvent) {
@@ -131,6 +153,22 @@ export class TabStrip {
       d.moved = true;
       d.el.classList.add("is-dragging");
     }
+
+    // 窓の外に出たか。client 座標はウィンドウの外でも伸び続けるが、
+    // 基準にするのは pointerdown 時に得た原点 (window.screenX は嘘をつく)。
+    d.outside =
+      e.screenX < d.originX ||
+      e.screenY < d.originY ||
+      e.screenX > d.originX + window.innerWidth ||
+      e.screenY > d.originY + window.innerHeight;
+
+    // タブ列から縦に離れたら持ち出しの構え。並べ替えはやめる。
+    const strip = this.root.getBoundingClientRect();
+    const away =
+      d.outside || e.clientY < strip.top - DETACH_MARGIN || e.clientY > strip.bottom + DETACH_MARGIN;
+    d.el.classList.toggle("is-detaching", away);
+    if (away) return;
+
     // ポインタの下にある別のタブの、どちら半分にいるかで差し込み位置を決める。
     // translate ではなく DOM を直接動かすので、離した時点の並びがそのまま結果になる。
     const over = this.tabAt(e.clientX, d.el);
@@ -144,17 +182,22 @@ export class TabStrip {
     const d = this.drag;
     this.drag = null;
     if (!d) return;
-    d.el.classList.remove("is-dragging");
-    // 選択は click 側でやる。ここで並べ替えだけ確定させる。
+    const detaching = d.el.classList.contains("is-detaching");
+    d.el.classList.remove("is-dragging", "is-detaching");
+    // 選択は click 側でやる。ここで並べ替えと持ち出しだけ確定させる。
     if (!d.moved) return;
     e.preventDefault();
     this.justDragged = true;
+    if (detaching) {
+      this.hooks.onDropOutside(d.id, e.screenX, e.screenY);
+      return;
+    }
     this.hooks.onReorder(this.domOrder());
   }
 
   private cancel() {
     const wasDragging = this.drag?.moved ?? false;
-    this.drag?.el.classList.remove("is-dragging");
+    this.drag?.el.classList.remove("is-dragging", "is-detaching");
     this.drag = null;
     // 並べ替え途中で取り消されたら、状態を持っている側の順序へ描き直す
     if (wasDragging) this.render(this.views, this.activeId);

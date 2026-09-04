@@ -97,6 +97,11 @@ static WINDOW_SEQ: AtomicUsize = AtomicUsize::new(1);
 /// 追加ウィンドウをずらす量 (論理ピクセル)
 const CASCADE_STEP: f64 = 28.0;
 
+/// 単一文書ウィンドウの既定サイズ (論理ピクセル)。
+/// 切り離しの位置をモニタ内へ収める計算にも使う。
+const VIEWER_W: f64 = 1100.0;
+const VIEWER_H: f64 = 840.0;
+
 /// このビューアーで開く拡張子。フロントの isMarkdownPath と揃える。
 /// (bundle の fileAssociations もこの一覧に合わせてある)
 const MD_EXTS: [&str; 5] = ["md", "markdown", "mdown", "mkd", "mdx"];
@@ -745,6 +750,133 @@ fn spawn_project_window_at(
     Ok(())
 }
 
+// ---------- タブの切り離しと取り込み ----------
+
+/// ドラッグ中の当たり判定に使うウィンドウの矩形 (論理ピクセル)。
+#[derive(serde::Serialize)]
+struct WindowRect {
+    label: String,
+    /// "file" (単一文書) か "project" (ツリーペイン + タブ)
+    kind: &'static str,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+}
+
+/// 開いているすべてのウィンドウの矩形を返す。
+///
+/// フロントから 1 窓ずつ outerPosition / outerSize / scaleFactor を
+/// 問い合わせると 3N 往復になるので、まとめて 1 回で返す。
+/// 単位は論理ピクセル。pointer イベントの screenX / screenY と同じ空間なので
+/// そのまま点の内外判定に使える。
+#[tauri::command]
+fn window_rects(app: AppHandle) -> Vec<WindowRect> {
+    let roots: HashSet<String> = app
+        .state::<ProjectRoots>()
+        .0
+        .lock()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect();
+
+    app.webview_windows()
+        .iter()
+        .filter_map(|(label, w)| {
+            let (x, y) = window_origin(w)?;
+            let size = w.outer_size().ok()?;
+            let scale = w.scale_factor().ok()?;
+            Some(WindowRect {
+                kind: if roots.contains(label) { "project" } else { "file" },
+                label: label.clone(),
+                x,
+                y,
+                w: size.width as f64 / scale,
+                h: size.height as f64 / scale,
+            })
+        })
+        .collect()
+}
+
+/// タブを窓の外へ落としたときに、そこへ単一文書ウィンドウを作る。
+///
+/// 座標は離した位置 (論理ピクセル)。掴んでいたタブのあたりにカーソルが
+/// 来るよう少し左上へずらして置く。
+///
+/// 呼び出し側は台帳から自分のタブを外すが、順番は問わない
+/// (台帳は label ごとに分かれているので取り違えない)。
+#[tauri::command]
+async fn tear_out_tab(app: AppHandle, path: String, x: f64, y: f64) -> Result<(), String> {
+    let canon = canonicalize(&path).map_err(|e| format!("ファイルが見つかりません: {e}"))?;
+    // カーソルの少し右下にタブが来る位置に置き、落とした先のモニタへ収める
+    let origin = clamp_to_monitor(&app, x - 90.0, y - 16.0);
+    spawn_viewer_window_at(&app, canon.to_string_lossy().into_owned(), Some(origin))
+}
+
+/// 新しいウィンドウの左上座標を、その点を含むモニタの中へ収める。
+/// 画面の端で離したときに窓の大半が画面外へ出て掴み直せなくなるのを防ぐ。
+/// どのモニタにも当たらない座標のときはそのまま返す。
+fn clamp_to_monitor(app: &AppHandle, x: f64, y: f64) -> (f64, f64) {
+    let Ok(monitors) = app.available_monitors() else {
+        return (x, y);
+    };
+    for m in monitors {
+        let s = m.scale_factor();
+        let pos = m.position();
+        let size = m.size();
+        let (mx, my) = (pos.x as f64 / s, pos.y as f64 / s);
+        let (mw, mh) = (size.width as f64 / s, size.height as f64 / s);
+        if x < mx || x > mx + mw || y < my || y > my + mh {
+            continue;
+        }
+        return (
+            x.clamp(mx, (mx + mw - VIEWER_W).max(mx)),
+            y.clamp(my, (my + mh - VIEWER_H).max(my)),
+        );
+    }
+    (x, y)
+}
+
+/// タブを別のウィンドウに渡す。相手に開かせて前面化する。
+/// 自分のタブを閉じるのは呼び出し側の仕事。
+#[tauri::command]
+fn adopt_tab(app: AppHandle, label: String, path: String) -> Result<(), String> {
+    let canon = canonicalize(&path).map_err(|e| format!("ファイルが見つかりません: {e}"))?;
+    app.emit_to(
+        label.as_str(),
+        "tab:adopt",
+        canon.to_string_lossy().into_owned(),
+    )
+    .map_err(|e| e.to_string())?;
+    focus_window(&app, &label);
+    Ok(())
+}
+
+/// 呼び出し元のウィンドウを論理座標へ動かす。
+///
+/// ウィンドウのドラッグを自前で持つために使う (macOS の OS ドラッグは
+/// 開始しか通知されず、どこで離したかを知る手段が無い)。JS の setPosition
+/// ではなくコマンドにしてあるのは、window の変更操作をすべて Rust 側に
+/// 集めて capabilities を増やさないため。
+#[tauri::command]
+fn set_window_origin(window: tauri::WebviewWindow, x: f64, y: f64) {
+    let _ = window.set_position(tauri::LogicalPosition::new(x, y));
+}
+
+/// ドラッグ中の窓が、受け入れ先の候補に「今カーソルが上にいる」ことを伝える。
+/// 相手はタブ列を光らせて受け入れ可能なことを示す。
+#[tauri::command]
+fn dock_hover(app: AppHandle, label: String, active: bool) {
+    let _ = app.emit_to(label.as_str(), "dock:hover", active);
+}
+
+/// 呼び出し元のウィンドウを閉じる。取り込まれた側が自分を畳むのに使う。
+#[tauri::command]
+fn close_self(window: tauri::WebviewWindow) {
+    let _ = window.close();
+}
+
 /// 起動時に開くべきファイルを返す。
 /// Finder 経由・CLI 引数・新規ウィンドウの割り当てはいずれも PendingOpen に
 /// 積まれているので、ここは取り出すだけ。振り分けは setup と
@@ -1191,7 +1323,7 @@ fn spawn_viewer_window_at(
 
     let mut builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("index.html".into()))
         .title("Inkfish")
-        .inner_size(1100.0, 840.0)
+        .inner_size(VIEWER_W, VIEWER_H)
         .min_inner_size(520.0, 400.0);
 
     if let Some((x, y)) = origin {
@@ -1350,6 +1482,12 @@ pub fn run() {
             set_window_tabs,
             list_open_windows,
             focus_window_by_label,
+            window_rects,
+            tear_out_tab,
+            adopt_tab,
+            set_window_origin,
+            dock_hover,
+            close_self,
             export_pdf
         ])
         .build(tauri::generate_context!())

@@ -103,6 +103,13 @@
   box-shadow: var(--shadow);
 }
 
+/* 列から持ち出す構え。離すと切り離される (別の窓の上なら渡される) */
+.ink-tab.is-detaching {
+  opacity: 0.5;
+  border-style: dashed;
+  border-color: var(--accent);
+}
+
 .ink-tab:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
@@ -329,6 +336,13 @@ body.is-pane-collapsed .ink-splitter {
   inset: 0;
   /* 上端の逃げはツールバーではなくこの枠が持っているので 0 にする */
   --ink-chrome-top: 0px;
+}
+
+/* 別のウィンドウがこの窓の上に来ている。タブとして受け入れられることを示す */
+body.is-dock-target .ink-tabstrip {
+  outline: 2px dashed var(--accent);
+  outline-offset: -3px;
+  border-radius: 8px;
 }
 
 /* ドロップの受け入れ枠。ビューアではなくタブの器に描くので、

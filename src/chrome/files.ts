@@ -78,3 +78,44 @@ export async function openDropped(
     onError("Markdown ファイルかフォルダをドロップしてください");
   }
 }
+
+// ---------- ウィンドウをまたぐタブの受け渡し ----------
+
+/// ドラッグ中の当たり判定に使うウィンドウの矩形 (論理ピクセル)。
+/// pointer イベントの screenX / screenY と同じ空間。
+export type WindowRect = {
+  label: string;
+  kind: "file" | "project";
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+};
+
+export const windowRects = () => invoke<WindowRect[]>("window_rects");
+
+/// 点を含むウィンドウを返す。重なっているときは前面が分からないので、
+/// タブを持てるプロジェクトウィンドウを優先する。
+export function windowAt(rects: WindowRect[], x: number, y: number): WindowRect | null {
+  const hits = rects.filter((r) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h);
+  return hits.find((r) => r.kind === "project") ?? hits[0] ?? null;
+}
+
+/// タブを窓の外へ落として単一文書ウィンドウにする (座標は離した位置)。
+export const tearOutTab = (path: string, x: number, y: number) =>
+  invoke("tear_out_tab", { path, x, y });
+
+/// タブを別のウィンドウに渡す。相手が tab:adopt を受けて開く。
+export const adoptTab = (label: string, path: string) =>
+  invoke("adopt_tab", { label, path });
+
+/// 自分のウィンドウを論理座標へ動かす (自前のウィンドウドラッグ用)。
+export const setWindowOrigin = (x: number, y: number) =>
+  invoke("set_window_origin", { x, y });
+
+/// 受け入れ先の候補に「今カーソルが上にいる」ことを伝える (タブ列が光る)。
+export const dockHover = (label: string, active: boolean) =>
+  invoke("dock_hover", { label, active });
+
+/// 自分のウィンドウを閉じる。
+export const closeSelf = () => invoke("close_self");
