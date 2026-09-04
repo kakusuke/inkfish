@@ -25,6 +25,9 @@
         <span class="ink-live-dot" title="ファイルの変更を監視中"></span>
         <span class="ink-filename"></span>
         <span class="ink-mode-badge hidden">MARP</span>
+        <button class="ink-window-toggle" aria-haspopup="listbox" aria-expanded="false" title="開いているウィンドウ">
+          <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5l4 4 4-4"/></svg>
+        </button>
       </div>
 
       <div class="ink-tb-actions">
@@ -40,6 +43,10 @@
       </div>
     </header>
 
+
+    <!-- 開いているウィンドウの一覧。capsule の border-radius と max-width に
+         クリップされないよう、ツールバーの兄弟として置く -->
+    <div class="ink-window-menu hidden" role="listbox" aria-label="開いているウィンドウ"></div>
 
     <!-- 読書プログレスバー(ツールバー下端の細いライン) -->
     <div class="ink-progress" aria-hidden="true"></div>

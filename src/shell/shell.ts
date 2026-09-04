@@ -12,6 +12,7 @@ import { FindBar } from "./findbar";
 import { fillSettings, openInEditor, wireSettings } from "./settings";
 import { pushRecent, renderRecents } from "./recents";
 import { exportPdf } from "./pdf";
+import { WindowMenu } from "./windowmenu";
 import {
   isMarkdownPath,
   openFileDialog,
@@ -19,6 +20,7 @@ import {
   readMdFile,
   registerShownFile,
   requestOpen,
+  setWindowCaption,
   watchFile,
 } from "./files";
 
@@ -44,6 +46,7 @@ export class AppShell {
   private currentSource = "";
   private reloadTimer: ReturnType<typeof setTimeout> | undefined;
   private settingsPopover!: ReturnType<PopoverGroup["register"]>;
+  private windowMenu!: WindowMenu;
 
   constructor(opts: { resolveAsset: (absPath: string) => string }) {
     this.emptyEl = $(".ink-empty");
@@ -97,6 +100,25 @@ export class AppShell {
       (msg) => this.toast.show(msg),
       () => this.popovers.close(this.settingsPopover)
     );
+
+    // ウィンドウ切替のキャレット。一覧は開くたびに取り直す。
+    this.windowMenu = new WindowMenu($(".ink-window-menu"), this.toolbar.capsule, (msg) =>
+      this.toast.show(msg)
+    );
+    const windowPopover = this.popovers.register({
+      panel: $(".ink-window-menu"),
+      toggle: this.toolbar.windowToggle,
+      onOpen: () => this.windowMenu.refresh(),
+    });
+    this.windowMenu.close = () => this.popovers.close(windowPopover);
+    this.toolbar.windowToggle.addEventListener("click", () =>
+      this.popovers.toggle(windowPopover)
+    );
+    // ↑↓ / Enter は一覧が開いているときだけ専有する
+    window.addEventListener("keydown", (e) => {
+      if (!this.popovers.isOpen(windowPopover)) return;
+      if (this.windowMenu.handleKey(e.key)) e.preventDefault();
+    });
 
     $('[data-act="open"]').addEventListener("click", () => this.pickFile());
     $('[data-act="empty-open"]').addEventListener("click", () => this.pickFile());
@@ -245,6 +267,8 @@ export class AppShell {
     const caption = title || name;
     this.toolbar.setCaption(caption, name);
     getCurrentWindow().setTitle(`${caption} — Inkfish`);
+    // ウィンドウ切替の一覧が同じ文字列を出せるように登録する
+    setWindowCaption(caption).catch(() => {});
   }
 
   private async editCurrent() {

@@ -30,6 +30,14 @@ struct WatchState(Mutex<HashMap<String, RecommendedWatcher>>);
 #[derive(Default)]
 struct ShownFiles(Mutex<HashMap<String, PathBuf>>);
 
+/// 各ウィンドウのツールバーに出ているキャプション (label -> caption)。
+/// front matter の title があればそれ、なければファイル名。
+/// ウィンドウ切替の一覧で「今どの文書を見ている窓か」を出すために持つ。
+/// タイトル文字列から " — Inkfish" を剥がす手もあるが、表示の決め方を
+/// フロント側の一箇所 (applyCaption) に閉じておきたいので登録させる。
+#[derive(Default)]
+struct WindowCaptions(Mutex<HashMap<String, String>>);
+
 /// ウィンドウが起動時に開くべきファイル (label -> path)。
 /// WebView の JS が立ち上がる前に届いた分をここに保持し、
 /// フロントエンドが get_startup_file で取り出す。
@@ -102,6 +110,88 @@ fn register_shown_file(window: tauri::WebviewWindow, path: String) {
         .lock()
         .unwrap()
         .remove(window.label());
+}
+
+/// ウィンドウ切替の一覧に出す 1 行。
+#[derive(serde::Serialize)]
+struct WindowEntry {
+    label: String,
+    /// front matter の title かファイル名
+    caption: String,
+    /// ファイル名 (caption が title のときの補助表示)
+    name: String,
+    /// 2 行目に出す親ディレクトリ
+    dir: String,
+    /// 呼び出し元のウィンドウ自身か
+    current: bool,
+}
+
+/// フロントが自分のキャプションを登録する。render のたびに呼ばれる。
+#[tauri::command]
+fn set_window_caption(window: tauri::WebviewWindow, caption: String) {
+    window
+        .app_handle()
+        .state::<WindowCaptions>()
+        .0
+        .lock()
+        .unwrap()
+        .insert(window.label().to_string(), caption);
+}
+
+/// ファイルを開いているウィンドウの一覧を返す。
+///
+/// 台帳 (ShownFiles) を引くので、まだ何も表示していない窓は出てこない。
+/// 並びは開いた順 (main が先頭、以降は viewer-N の採番順)。
+#[tauri::command]
+fn list_open_windows(app: AppHandle, window: tauri::WebviewWindow) -> Vec<WindowEntry> {
+    let shown = app.state::<ShownFiles>().0.lock().unwrap().clone();
+    let captions = app.state::<WindowCaptions>().0.lock().unwrap().clone();
+    let live = app.webview_windows();
+
+    let mut entries: Vec<WindowEntry> = shown
+        .into_iter()
+        // 閉じた直後などで台帳に残っていても実体が無いものは出さない
+        .filter(|(label, _)| live.contains_key(label))
+        .map(|(label, path)| {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let dir = path
+                .parent()
+                .map(|d| d.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let caption = captions
+                .get(&label)
+                .filter(|c| !c.is_empty())
+                .cloned()
+                .unwrap_or_else(|| name.clone());
+            WindowEntry {
+                current: label == window.label(),
+                label,
+                caption,
+                name,
+                dir,
+            }
+        })
+        .collect();
+
+    entries.sort_by_key(|e| window_order(&e.label));
+    entries
+}
+
+/// ラベルから開いた順を求める。main は必ず先頭、以降は viewer-N の N 順。
+fn window_order(label: &str) -> (u8, usize) {
+    match label.strip_prefix("viewer-") {
+        Some(n) => (1, n.parse().unwrap_or(usize::MAX)),
+        None => (0, 0),
+    }
+}
+
+/// 一覧から選ばれたウィンドウを前面化する。
+#[tauri::command]
+fn focus_window_by_label(app: AppHandle, label: String) {
+    focus_window(&app, &label);
 }
 
 /// ファイルを開くときの共通ルール:
@@ -601,6 +691,7 @@ pub fn run() {
         .manage(WatchState::default())
         .manage(ShownFiles::default())
         .manage(PendingOpen::default())
+        .manage(WindowCaptions::default())
         .setup(|app| {
             // CLI 引数のファイルを振り分ける。config 宣言の main ウィンドウは
             // build 中に作られているので、この時点で存在する。
@@ -644,6 +735,9 @@ pub fn run() {
             open_path,
             register_shown_file,
             get_startup_file,
+            set_window_caption,
+            list_open_windows,
+            focus_window_by_label,
             export_pdf
         ])
         .build(tauri::generate_context!())
@@ -682,6 +776,12 @@ pub fn run() {
                 .remove(&label);
             app_handle
                 .state::<PendingOpen>()
+                .0
+                .lock()
+                .unwrap()
+                .remove(&label);
+            app_handle
+                .state::<WindowCaptions>()
                 .0
                 .lock()
                 .unwrap()

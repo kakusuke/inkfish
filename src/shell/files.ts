@@ -8,6 +8,9 @@ export const isMarkdownPath = (p: string) => /\.(md|markdown|mdown|mdx)$/i.test(
 export const readMdFile = (path: string) => invoke<string>("read_md_file", { path });
 export const watchFile = (path: string) => invoke("watch_file", { path });
 export const registerShownFile = (path: string) => invoke("register_shown_file", { path });
+/// ウィンドウ切替の一覧に出す表示名を Rust 側の台帳に登録する
+export const setWindowCaption = (caption: string) =>
+  invoke("set_window_caption", { caption });
 
 /// ファイルを開くときのウィンドウ振り分けは Rust 側 (open_path) が決める:
 /// 既に表示中のウィンドウがあれば前面化、この窓が空ならここで表示、

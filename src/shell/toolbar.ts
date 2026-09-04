@@ -3,6 +3,7 @@
 export class Toolbar {
   readonly capsule: HTMLElement;
   readonly fileName: HTMLElement;
+  readonly windowToggle: HTMLButtonElement;
   private liveDot: HTMLElement;
   private modeBadge: HTMLElement;
   private progress: HTMLElement;
@@ -10,6 +11,7 @@ export class Toolbar {
   constructor(root: HTMLElement, progress: HTMLElement) {
     this.capsule = root.querySelector<HTMLElement>(".ink-capsule")!;
     this.fileName = root.querySelector<HTMLElement>(".ink-filename")!;
+    this.windowToggle = root.querySelector<HTMLButtonElement>(".ink-window-toggle")!;
     this.liveDot = root.querySelector<HTMLElement>(".ink-live-dot")!;
     this.modeBadge = root.querySelector<HTMLElement>(".ink-mode-badge")!;
     this.progress = progress;
