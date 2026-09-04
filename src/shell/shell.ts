@@ -29,6 +29,13 @@ import {
 } from "../chrome/files";
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
+/// 同じ data-act を持つ要素が複数ある (ツールバーと空の状態の「フォルダを開く」)
+/// ので、まとめて配線する。
+const onAct = (act: string, fn: () => void) => {
+  for (const el of Array.from(document.querySelectorAll(`[data-act="${act}"]`))) {
+    el.addEventListener("click", fn);
+  }
+};
 
 /// ウィンドウのガワ。ツールバー・空の状態・検索バー・設定・トーストを持ち、
 /// 中身 (DocumentViewer) を内部で生成して配線する。
@@ -128,10 +135,10 @@ export class AppShell {
       onDrop: (label) => void this.dockInto(label),
     });
 
-    $('[data-act="open"]').addEventListener("click", () => this.pickFile());
-    $('[data-act="open-dir"]')?.addEventListener("click", () => this.pickDir());
-    $('[data-act="empty-open"]').addEventListener("click", () => this.pickFile());
-    $('[data-act="edit"]').addEventListener("click", () => this.editCurrent());
+    onAct("open", () => void this.pickFile());
+    onAct("empty-open", () => void this.pickFile());
+    onAct("open-dir", () => void this.pickDir());
+    onAct("edit", () => void this.editCurrent());
   }
 
   private wireBackend() {

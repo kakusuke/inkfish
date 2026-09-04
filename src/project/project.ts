@@ -154,6 +154,7 @@ export class ProjectShell {
     });
 
     $('[data-act="open"]').addEventListener("click", () => void this.pickFile());
+    $('[data-act="open-dir"]').addEventListener("click", () => void this.pickDir());
     $('[data-act="edit"]').addEventListener("click", () => void this.editActive());
     $('[data-act="refresh-tree"]').addEventListener("click", () => void this.tree.refresh());
   }

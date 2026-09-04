@@ -1,5 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 
+/// ディレクトリの行に付けるフォルダの絵。静的な文字列なので innerHTML でよい。
+const FOLDER_ICON = `<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.7l1.5 1.6h4.8A1.5 1.5 0 0 1 14 6.1v5.4A1.5 1.5 0 0 1 12.5 13h-9A1.5 1.5 0 0 1 2 11.5v-7z"/></svg>`;
+
 /// Rust 側 (read_md_tree) が返す節。
 export type TreeNode = {
   name: string;
@@ -163,7 +166,15 @@ export class TreePane {
       const dot = document.createElement("span");
       dot.className = "ink-tree-dot";
 
-      row.append(twisty, label, dot);
+      if (n.dir) {
+        const icon = document.createElement("span");
+        icon.className = "ink-tree-icon";
+        icon.setAttribute("aria-hidden", "true");
+        icon.innerHTML = FOLDER_ICON;
+        row.append(twisty, icon, label, dot);
+      } else {
+        row.append(twisty, label, dot);
+      }
       if (n.dir) row.setAttribute("aria-expanded", String(this.expanded.has(n.path)));
       out.push(row);
 

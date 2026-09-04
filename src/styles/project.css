@@ -10,6 +10,9 @@
   --ink-tb-top: 32px;
   --ink-tabstrip: 38px;
   --ink-chrome: calc(var(--ink-tb-top) + var(--ink-tabstrip));
+  /* 共通のクローム部品 (プログレスバーなど) がガワの高さを知るための値。
+     タブの中身は .ink-tabpane で 0 に上書きする。 */
+  --ink-chrome-top: calc(var(--ink-tb-top) + var(--ink-tabstrip));
 }
 
 .ink-toolbar {
@@ -53,6 +56,7 @@
    pointer イベントがこちらに届く (並べ替え・切り離しに使う)。
    ============================================================ */
 .ink-tabstrip {
+  position: relative;
   display: flex;
   align-items: flex-end;
   gap: 2px;
@@ -99,8 +103,24 @@
 }
 
 .ink-tab.is-dragging {
-  opacity: 0.75;
+  z-index: 2;
+  opacity: 0.85;
+  background: var(--surface);
+  border-color: var(--line);
   box-shadow: var(--shadow);
+}
+
+/* 差し込み位置の目印。ドラッグ中は DOM を動かさないので、
+   どこに入るかはこの線で示す。 */
+.ink-tab-marker {
+  position: absolute;
+  bottom: 0;
+  width: 2px;
+  height: 30px;
+  margin-left: -1px;
+  background: var(--accent);
+  border-radius: 1px;
+  pointer-events: none;
 }
 
 /* 列から持ち出す構え。離すと切り離される (別の窓の上なら渡される) */
@@ -283,6 +303,18 @@ body.is-pane-collapsed .ink-splitter {
   width: 11px;
   font-size: 9px;
   color: var(--ink-2);
+}
+
+/* ディレクトリの目印。ファイルの行には無いので、字下げは twisty で揃う */
+.ink-tree-icon {
+  flex: none;
+  display: flex;
+  align-items: center;
+  color: var(--ink-2);
+}
+
+.ink-tree-row.is-active .ink-tree-icon {
+  color: #fff;
 }
 
 .ink-tree-row.is-active .ink-tree-twisty {
