@@ -136,8 +136,10 @@ export class DocumentViewer {
     await this.render();
   }
 
-  /// 表示されていない間の再描画を止める。凍結を解くときに、溜まっていれば描き直す。
-  /// タブの切り替えで使う (テーマ変更でタブの数だけ再描画が走るのを防ぐ)。
+  /// 表示されていない間は描画そのものを止める。凍結を解くときにまとめて描く。
+  ///
+  /// タブの切り替えで使う。ファイルの変更やテーマの切り替えは全タブに
+  /// 届くので、凍結しないとタブの数だけ描画が走る。
   async setFrozen(frozen: boolean) {
     this.frozen = frozen;
     if (frozen || !this.dirty) return;
@@ -243,6 +245,12 @@ export class DocumentViewer {
   }
 
   private async render() {
+    // 隠れている間は描かない。表に出るとき (setFrozen(false)) にまとめて描く。
+    if (this.frozen) {
+      this.dirty = true;
+      return;
+    }
+
     // 描画は mermaid / Marp の遅延ロードを挟むので、終わる前に次の描画が
     // 始まりうる。自分より新しい描画が走り出していたら、以降の DOM 操作は
     // すべて古い内容の上書きになるので手を引く。

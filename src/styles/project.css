@@ -176,7 +176,11 @@ body.is-pane-collapsed .ink-splitter {
   display: none;
 }
 
+/* 列は明示的に置く。ツリーを畳むと .ink-pane と .ink-splitter が
+   display:none になり、grid の自動配置では残った .ink-tabpanes が
+   1 列目 (幅 0) に入ってしまうため。 */
 .ink-pane {
+  grid-column: 1;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -220,6 +224,7 @@ body.is-pane-collapsed .ink-splitter {
 }
 
 .ink-splitter {
+  grid-column: 2;
   background: var(--line);
   cursor: col-resize;
 }
@@ -326,6 +331,7 @@ body.is-pane-collapsed .ink-splitter {
    絶対配置で重ねておき、表示中のもの以外は .hidden で隠す。
    ============================================================ */
 .ink-tabpanes {
+  grid-column: 3;
   position: relative;
   min-width: 0;
   background: var(--bg);
@@ -336,6 +342,14 @@ body.is-pane-collapsed .ink-splitter {
   inset: 0;
   /* 上端の逃げはツールバーではなくこの枠が持っているので 0 にする */
   --ink-chrome-top: 0px;
+}
+
+/* 表に出ていないタブは display:none にしない。レイアウトが失われると
+   Mermaid と Marp が採寸に失敗し (幅 0 で計算される)、表に出したときに
+   図やスライドが空になる。描画だけを止める visibility で隠す。 */
+.ink-tabpane.is-inactive {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 /* 別のウィンドウがこの窓の上に来ている。タブとして受け入れられることを示す */
@@ -394,4 +408,11 @@ body.is-exporting .ink-tabpane {
   position: static;
   height: auto;
   background: transparent;
+}
+
+/* 書き出すのはアクティブなタブだけ。visibility で隠しているだけの
+   タブは絶対配置を解くと紙に空白として残ってしまうので、
+   ここでは流れから外す。 */
+body.is-exporting .ink-tabpane.is-inactive {
+  display: none !important;
 }

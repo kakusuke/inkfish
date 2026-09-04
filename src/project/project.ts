@@ -349,16 +349,22 @@ export class ProjectShell {
       onLinkActivate: (t) => void this.handleLink(t),
     });
     this.tabs.push(tab);
+    // 読み込む前に表へ出す。凍結中は描画を溜めるので、先に出さないと
+    // 開いたタブが空のまま見えてしまう。
+    this.activate(tab.id);
     try {
       await tab.load();
     } catch (e) {
       tab.dispose();
       this.tabs = this.tabs.filter((t) => t.id !== tab.id);
       this.toast.show(`読み込めませんでした: ${e}`);
+      // 消したタブを選んだままにしない
+      if (this.activeId === tab.id) {
+        this.activeId = this.tabs[this.tabs.length - 1]?.id ?? null;
+        for (const t of this.tabs) t.setActive(t.id === this.activeId);
+      }
       this.syncTabs();
-      return;
     }
-    this.activate(tab.id);
   }
 
   private activate(id: string) {

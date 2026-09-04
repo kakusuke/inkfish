@@ -6,12 +6,8 @@ import type { Mermaid } from "mermaid";
 let mermaid: Mermaid | null = null;
 
 // 描画は 1 つずつ順番に行う。ひとつの document に DocumentViewer が複数
-// (タブごとに 1 つ) 載るため、同時に描かせると壊れる:
-//   - deterministicIds の連番はライブラリ全体で 1 本なので、同時に走る 2 つの
-//     描画が同じ id を持ち、mermaid が id セレクタで掴む描画先を取り違える
-//   - initialize() のテーマ設定もライブラリ全体で 1 本なので、Marp のタブと
-//     本文のタブが同時に描くと互いの設定を奪い合う
-// 直列化すればどちらも起きないので、id の付け替えも設定の複製も要らない。
+// (タブごとに 1 つ) 載るため、同時に描かせると initialize() のテーマ設定を
+// 互いに奪い合う (Marp のタブと本文のタブで theme が違う)。
 let queue: Promise<unknown> = Promise.resolve();
 function serialize<T>(task: () => Promise<T>): Promise<T> {
   // 前の描画が失敗しても列は止めない
@@ -48,22 +44,27 @@ const htmlLabelsFor = (ctx: MermaidContext) => !ctx.marp;
 export const mermaidConfigKey = (ctx: MermaidContext) =>
   `${themeFor(ctx)}|${htmlLabelsFor(ctx)}`;
 
-// 直近 initialize() に渡した設定 (ライブラリに今当たっているもの)。
-let appliedConfig: string | null = null;
+// 図の id は自分で振る。プロセス内で一意なら十分。
+//
+// mermaid.run() には任せられない。run() は呼び出しごとに id の採番器を
+// 作り直すので、何度呼んでも `mermaid-0`, `mermaid-1`, … と同じ id が
+// 出てくる。そして描画の実処理は id を document 全体から引き当てるため、
+// 同じ id の SVG が別のタブに残っていると**そちらへ描き込んでしまう**。
+// 結果、先に開いたタブの図が差し替わり、いま描いたタブには viewBox も
+// 節も無い空の SVG が残る (例外も出ないので気づきにくい)。
+// 1 つの document に文書が 1 つだけなら、前の SVG は描き直しで消えるため
+// 表に出なかった。タブを持ったことで顕在化した。
+let idSeq = 0;
 
 function initialize(ctx: MermaidContext) {
   if (!mermaid) return;
-  appliedConfig = mermaidConfigKey(ctx);
   const htmlLabels = htmlLabelsFor(ctx);
   mermaid.initialize({
     startOnLoad: false,
     securityLevel: "antiscript",
     theme: themeFor(ctx),
     fontFamily: "ui-monospace, SF Mono, Menlo, monospace",
-    // 既定の id は Date.now() 由来なので、同一ミリ秒に描画開始した図が
-    // 同じ id を持ってしまう。mermaid は内部で id セレクタを使って描画先を
-    // 探すため、衝突すると片方が空の SVG になる。連番 id にして防ぐ。
-    deterministicIds: true,
+    // id は render() の引数として自分で渡すので、mermaid 側の採番は使わない
     // 図ごとに別のキーを見るため、全体・フローチャート・クラス図の
     // それぞれに渡す (フローチャートはエッジのラベルもこの設定に従う)。
     htmlLabels,
@@ -114,25 +115,44 @@ async function runMermaidNow(
 ): Promise<string | null> {
   // 順番待ちの間に描き直しが始まっていたら描かない
   if (stale()) return null;
+
+  let failed = 0;
   try {
     const m = await getMermaid(ctx);
     if (stale()) return null;
-    // initialize() は次の run() から効くので、描画の直前に当て直す。
-    if (appliedConfig !== mermaidConfigKey(ctx)) initialize(ctx);
-    await m.run({ nodes: blocks });
+    // initialize() は次の描画から効くので、描画の直前に当て直す
+    initialize(ctx);
+
+    // run() ではなく render() を 1 図ずつ呼ぶ。id を自分で渡せるのが理由
+    // (上の idSeq のコメント参照)。render() は body に付けた一時要素の中で
+    // 描いて SVG を文字列で返すので、隠れた器の中でも文字の寸法が測れる。
+    for (const block of blocks) {
+      const source = (block.textContent ?? "").trim();
+      if (!source) continue;
+      try {
+        const { svg, bindFunctions } = await m.render(`ink-mermaid-${++idSeq}`, source);
+        if (stale()) return null;
+        // mermaid が securityLevel に従って通した文字列
+        block.innerHTML = svg;
+        bindFunctions?.(block);
+      } catch (e) {
+        if (stale()) return null;
+        // 構文エラーはここへ来る。ブロックはソースのまま残るので、
+        // 何件描けなかったかだけ数えて後でまとめて知らせる。
+        console.error("Mermaid の描画に失敗しました", e);
+        failed += 1;
+      }
+    }
   } catch (e) {
     if (stale()) return null;
-    // 構文エラーのブロックは mermaid がエラー表示に差し替えたうえで
-    // 最初のエラーを投げ直してくるので、ここへ来ること自体は珍しくない。
-    // 差し替えすら行われず SVG が入らなかったブロックはソースが生のまま
-    // 残り、黙っていると原因がまったく追えないのでそのときだけ知らせる。
-    console.error("Mermaid の描画に失敗しました", e);
-    const unrendered = blocks.filter((b) => !b.querySelector("svg")).length;
-    if (unrendered) onError(`Mermaid を描画できませんでした (${unrendered} 件)`);
+    console.error("Mermaid を読み込めませんでした", e);
+    onError("Mermaid を読み込めませんでした");
+    return null;
   }
-  // 新しい描画に追い越されていたら、描いたことにしない
-  // (呼び出し側が控える設定キーは「今 DOM にある SVG」のものでなければならない)
+
   if (stale()) return null;
+  if (failed) onError(`Mermaid を描画できませんでした (${failed} 件)`);
+
   for (const block of blocks) {
     const svg = block.querySelector<SVGSVGElement>("svg");
     // 構文エラーの差し替え表示 (.error-icon を含む) は拡大対象外

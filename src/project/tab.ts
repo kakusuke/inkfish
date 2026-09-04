@@ -42,7 +42,9 @@ export class DocTab {
     this.caption = this.name;
 
     this.pane = document.createElement("div");
-    this.pane.className = "ink-tabpane hidden";
+    // display:none ではなく visibility で隠す (project.css の注記参照)。
+    // レイアウトを残さないと図とスライドの採寸が壊れる。
+    this.pane.className = "ink-tabpane is-inactive";
     this.pane.dataset.tab = this.id;
     panes.appendChild(this.pane);
 
@@ -104,7 +106,7 @@ export class DocTab {
   }
 
   setActive(active: boolean) {
-    this.pane.classList.toggle("hidden", !active);
+    this.pane.classList.toggle("is-inactive", !active);
     // 隠れている間の再描画は溜めておく (テーマ切替でタブの数だけ走らせない)
     void this.viewer.setFrozen(!active);
     if (active) this.viewer.focus();
