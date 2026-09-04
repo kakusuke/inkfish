@@ -18,10 +18,10 @@
       トースト・ウィンドウ切替) は単一文書ウィンドウと同じものを使う。
     -->
 
-    <header class="ink-toolbar">
-      <!-- 上段。deep なのでここを掴むとウィンドウが動く
-           (button 等のクリック可能要素は Tauri が自動で除外する) -->
-      <div class="ink-tb-top" data-tauri-drag-region="deep">
+    <!-- deep: ヘッダー全域をドラッグ領域にする。button と role="tab" は
+         Tauri が自動で除外するので、ボタンとタブの操作はそのまま通る。 -->
+    <header class="ink-toolbar" data-tauri-drag-region="deep">
+      <div class="ink-tb-top">
         <button data-act="toggle-pane" class="ink-tb-btn" title="ツリーを表示 / 隠す (⌘⌥B)">
           <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M6.2 3v10"/></svg>
         </button>
@@ -54,10 +54,10 @@
         </div>
       </div>
 
-      <!-- 下段: タブ列。空き領域は deep なのでウィンドウを動かせる。
-           タブ自体は role="tab" (= クリック可能) なので Tauri のドラッグ領域
-           から自動で外れ、pointer イベントがこちらに届く。 -->
-      <div class="ink-tabstrip" role="tablist" aria-label="開いているタブ" data-tauri-drag-region="deep"></div>
+      <!-- 下段: タブ列。左端は右ペインに揃える (project.css)。空き領域を
+           掴めばウィンドウが動き、タブ自体は role="tab" なので Tauri の
+           ドラッグ領域から外れて pointer イベントがこちらに届く。 -->
+      <div class="ink-tabstrip" role="tablist" aria-label="開いているタブ"></div>
     </header>
 
     <!-- 開いているウィンドウとタブの一覧 -->

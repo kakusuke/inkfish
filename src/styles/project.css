@@ -61,6 +61,10 @@
   align-items: flex-end;
   gap: 2px;
   height: var(--ink-tabstrip);
+  /* 右ペインの左端に合わせる。padding ではなく margin なのは、
+     スクロールする器の padding 部分にはタブが見えてしまい、
+     横スクロール時にツリーペインの上へはみ出すため。 */
+  margin-left: calc(var(--ink-pane-w, 260px) + 1px);
   padding: 0 8px;
   overflow-x: auto;
   overflow-y: hidden;
@@ -194,6 +198,11 @@ body.is-pane-collapsed .ink-body {
 body.is-pane-collapsed .ink-pane,
 body.is-pane-collapsed .ink-splitter {
   display: none;
+}
+
+/* ツリーを畳んだらタブ列も左端まで戻す */
+body.is-pane-collapsed .ink-tabstrip {
+  margin-left: 0;
 }
 
 /* 列は明示的に置く。ツリーを畳むと .ink-pane と .ink-splitter が

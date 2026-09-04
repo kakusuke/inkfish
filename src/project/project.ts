@@ -161,10 +161,13 @@ export class ProjectShell {
 
   /// ペインの幅と折りたたみ。幅はドラッグで変えて localStorage に覚える。
   private wirePane() {
-    const body = $(".ink-body");
     const splitter = $(".ink-splitter");
 
-    const apply = (w: number) => body.style.setProperty("--ink-pane-w", `${w}px`);
+    // ペインの幅は :root に置く。本体のグリッドだけでなく、ツールバーの
+    // タブ列も同じ値を読んで左端を右ペインに合わせるため
+    // (ツールバーは .ink-body の兄弟なので、そちらに置くと届かない)。
+    const apply = (w: number) =>
+      document.documentElement.style.setProperty("--ink-pane-w", `${w}px`);
     try {
       const saved = Number(localStorage.getItem(PANE_W_KEY));
       if (saved >= 160 && saved <= 640) apply(saved);
