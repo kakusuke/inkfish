@@ -1,5 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 
+/// 開閉のキャレット。ヘッダーのカプセルと同じシェブロン。閉じている行は
+/// CSS で -90 度回して右向きにする (project.css)。
+/// 文字の ▸ / ▾ は U+25B8 系が "SMALL" 三角で、font-size を上げても
+/// 字形が小さいままなので SVG にしている。
+const TWISTY_ICON = `<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5l4 4 4-4"/></svg>`;
+
 /// ディレクトリの行に付けるフォルダの絵。静的な文字列なので innerHTML でよい。
 const FOLDER_ICON = `<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.7l1.5 1.6h4.8A1.5 1.5 0 0 1 14 6.1v5.4A1.5 1.5 0 0 1 12.5 13h-9A1.5 1.5 0 0 1 2 11.5v-7z"/></svg>`;
 
@@ -156,8 +162,8 @@ export class TreePane {
 
       const twisty = document.createElement("span");
       twisty.className = "ink-tree-twisty";
-      // textContent なのでエスケープ不要
-      twisty.textContent = n.dir ? (this.expanded.has(n.path) ? "▾" : "▸") : "";
+      // 定数の文字列なのでエスケープ不要。向きは row の aria-expanded から CSS が決める
+      if (n.dir) twisty.innerHTML = TWISTY_ICON;
 
       const label = document.createElement("span");
       label.className = "ink-tree-label";

@@ -307,11 +307,20 @@ body.is-pane-collapsed .ink-tabstrip {
   background: var(--accent);
 }
 
+/* 開閉のキャレット。中身は SVG のシェブロン (tree.ts)。ファイルの行では
+   空のままで、字下げを揃える場所取りだけをする。 */
 .ink-tree-twisty {
   flex: none;
-  width: 11px;
-  font-size: 9px;
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
   color: var(--ink-2);
+}
+
+/* 閉じている行は右向き。開いている行は下向き (SVG のまま) */
+.ink-tree-row[aria-expanded="false"] .ink-tree-twisty {
+  transform: rotate(-90deg);
 }
 
 /* ディレクトリの目印。ファイルの行には無いので、字下げは twisty で揃う */
