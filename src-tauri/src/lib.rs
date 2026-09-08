@@ -1,3 +1,5 @@
+mod git;
+
 use ignore::WalkBuilder;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::hash_map::Entry;
@@ -106,7 +108,7 @@ const VIEWER_H: f64 = 840.0;
 /// (bundle の fileAssociations もこの一覧に合わせてある)
 const MD_EXTS: [&str; 5] = ["md", "markdown", "mdown", "mkd", "mdx"];
 
-fn is_markdown_path(p: &Path) -> bool {
+pub(crate) fn is_markdown_path(p: &Path) -> bool {
     p.extension()
         .and_then(|e| e.to_str())
         .map(|e| MD_EXTS.iter().any(|m| e.eq_ignore_ascii_case(m)))
@@ -157,11 +159,42 @@ fn ensure_watch<'a>(
                         );
                     }
 
+                    let Some(root) = t.root.as_ref() else { return };
+
+                    // .git の中身は git の状態にだけ関わり、ツリーの構造とは無関係。
+                    // 以前はここを分けておらず、拡張子の無いファイル (.git/index など) を
+                    // ディレクトリ操作と見なして tree:changed を出していた
+                    // — コミットのたびにツリーを作り直していたことになる。
+                    // objects/** と *.lock は fetch や gc で大量に動くだけなので捨てる。
+                    // worktree や submodule では .git がファイルで実体は別の場所にあるため
+                    // 届かない。そのときは変更ペインの手動更新に頼る。
+                    let git_dir = root.join(".git");
+                    if event.paths.iter().any(|p| p.starts_with(&git_dir)) {
+                        let objects = git_dir.join("objects");
+                        let meaningful = event.paths.iter().any(|p| {
+                            p.starts_with(&git_dir)
+                                && !p.starts_with(&objects)
+                                && p.extension().map_or(true, |e| e != "lock")
+                        });
+                        if meaningful {
+                            let _ = app.emit_to(emit_label.as_str(), "git:changed", ());
+                        }
+                        return;
+                    }
+
+                    // md の中身が変われば、木は変わらなくても git の状態は変わる
+                    if event
+                        .paths
+                        .iter()
+                        .any(|p| p.starts_with(root) && is_markdown_path(p))
+                    {
+                        let _ = app.emit_to(emit_label.as_str(), "git:changed", ());
+                    }
+
                     // ツリーの見た目が変わりうるのは md / ディレクトリの増減だけ。
                     // 中身の変更 (Modify(Data)) では木は変わらないので出さない。
                     // 拡張子つきで md でないものは、エディタの一時ファイル
                     // (`.swp` / `~`) を弾くために除く。
-                    let Some(root) = t.root.as_ref() else { return };
                     let structural = matches!(
                         event.kind,
                         Create(_) | Remove(_) | Modify(notify::event::ModifyKind::Name(_))
@@ -1492,7 +1525,10 @@ pub fn run() {
             set_window_origin,
             dock_hover,
             close_self,
-            export_pdf
+            export_pdf,
+            git::git_probe,
+            git::git_changes,
+            git::git_refs
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

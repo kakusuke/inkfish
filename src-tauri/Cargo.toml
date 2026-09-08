@@ -24,6 +24,9 @@ shell-words = "1"
 # Windows の canonicalize が返す `\\?\C:\…` を通常形式へ戻す (canonicalize() 参照)
 dunce = "1"
 ignore = "0.4"
+# git 連携 (src/git.rs)。gitoxide は pure Rust なので C ツールチェーンは要らず、
+# 外部の git コマンドにも依存しない。既定の feature は使わない (依存が増えるだけ)。
+gix = { version = "0.87", default-features = false, features = ["status", "revision", "sha1"] }
 
 # PDF 書き出し (WKWebView.createPDF) のための Objective-C ブリッジ
 [target.'cfg(target_os = "macos")'.dependencies]

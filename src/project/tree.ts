@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { GitState } from "./git";
 
 /// 開閉のキャレット。ヘッダーのカプセルと同じシェブロン。閉じている行は
 /// CSS で -90 度回して右向きにする (project.css)。
@@ -61,6 +62,8 @@ export class TreePane {
   private activePath: string | null = null;
   /// キーボード操作の現在位置 (表示されている行の index)
   private cursor = -1;
+  /// git の状態 (絶対パス → 状態)。色を塗るだけに使う
+  private gitStates = new Map<string, GitState>();
 
   constructor(
     private root: HTMLElement,
@@ -109,6 +112,15 @@ export class TreePane {
     this.render();
   }
 
+  /// git の状態を色で示す。渡ってくるのは HEAD からの差分で、変更ペインで
+  /// 選んでいる範囲とは連動しない (ツリーで見たいのは「今の編集状態」のため)。
+  /// DOM は作り直さず属性の付け替えだけで済ませる — 保存やコミットのたびに
+  /// 行を作り直すと、フォーカスやスクロールが飛ぶ。
+  markGit(states: Map<string, GitState>) {
+    this.gitStates = states;
+    this.paintGit();
+  }
+
   /// 開いているタブに印を付ける。
   markOpen(paths: string[], active: string | null) {
     this.openPaths = new Set(paths);
@@ -146,6 +158,7 @@ export class TreePane {
       this.root.replaceChildren(...rows);
     }
     this.paintMarks();
+    this.paintGit();
     this.paintCursor();
   }
 
@@ -197,6 +210,26 @@ export class TreePane {
       const path = row.dataset.path!;
       row.classList.toggle("is-open", this.openPaths.has(path));
       row.classList.toggle("is-active", path === this.activePath);
+    }
+  }
+
+  /// ディレクトリには子孫の状態を集約する。畳んでいると中の変更が見えないため。
+  /// 削除されたファイルはツリーに無いので現れない (それは変更ペインの役割)。
+  private paintGit() {
+    const paths = Array.from(this.gitStates.keys());
+    for (const row of this.rows) {
+      const path = row.dataset.path!;
+      let state: GitState | undefined;
+      if (row.dataset.dir === "1") {
+        const prefix = `${path}/`;
+        const inside = paths.filter((p) => p.startsWith(prefix)).map((p) => this.gitStates.get(p)!);
+        state = inside.includes("U") ? "U" : inside.length ? "M" : undefined;
+      } else {
+        state = this.gitStates.get(path);
+      }
+      // 未追跡も、HEAD から見れば追加なので同じ色にする
+      if (state) row.dataset.git = state === "?" ? "A" : state;
+      else delete row.dataset.git;
     }
   }
 
