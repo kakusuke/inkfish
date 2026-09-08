@@ -28,6 +28,7 @@ import { shortenPath } from "../shared/paths";
 import { DocTab } from "./tab";
 import { TreePane } from "./tree";
 import { GitPane, RangeMenu } from "./git";
+import { isRev } from "../shared/rev";
 import type { Range as GitRange } from "./git";
 import { TabStrip, type TabView } from "./tabs";
 
@@ -84,6 +85,7 @@ export class ProjectShell {
       $(".ink-hsplitter"),
       $(".ink-git-list"),
       $(".ink-git-range"),
+      $(".ink-git-menu"),
       {
         onOpen: (p) => void this.openPath(p),
         onNotice: (m) => this.toast.show(m),
@@ -410,6 +412,9 @@ export class ProjectShell {
   /// プロジェクトウィンドウからの要求は、他の窓が開いていなければ
   /// "load-here" (= この窓のタブ) になる。
   private async openPath(path: string) {
+    // 起点版は実ファイルではないので、窓の振り分け (open_path は canonicalize
+    // する) を通さずこのウィンドウのタブで開く
+    if (isRev(path)) return this.openTab(path);
     try {
       const outcome = await requestOpen(path);
       // "focused" のときは md:activate が飛んでくるので何もしない
@@ -545,7 +550,9 @@ export class ProjectShell {
     }));
     this.strip.render(views, this.activeId);
     this.emptyEl.classList.toggle("hidden", this.tabs.length > 0);
-    $('[data-act="edit"]').classList.toggle("hidden", !this.active);
+    // 起点版は実ファイルが無いのでエディタでは開けない
+    const editable = !!this.active && !isRev(this.active.path);
+    $('[data-act="edit"]').classList.toggle("hidden", !editable);
     const openPaths = this.tabs.map((t) => t.path);
     this.tree.markOpen(openPaths, this.active?.path ?? null);
     this.git.markOpen(openPaths, this.active?.path ?? null);

@@ -7,7 +7,7 @@
 use crate::is_markdown_path;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// 比較の端点。フロントから JSON で来る。
 ///
@@ -28,14 +28,17 @@ pub enum Endpoint {
 
 /// 1 ファイルの変化。path はフロントがそのまま open_path へ渡せる絶対パス。
 #[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct Change {
     path: String,
     /// リポジトリ相対 (表示用)
     rel: String,
     /// "M" 変更 / "A" 追加 / "D" 削除 / "R" 改名 / "U" コンフリクト / "?" 未追跡
     state: &'static str,
-    /// 改名元 (state が "R" のときだけ)
+    /// 改名元。表示用のリポジトリ相対パス (state が "R" のときだけ)
     from: Option<String>,
+    /// 同じく改名元の絶対パス。起点版を開く ID を組むのに使う
+    from_path: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -44,8 +47,11 @@ pub struct GitChanges {
     entries: Vec<Change>,
     /// md 以外で変わったファイルの数 (脚注に出す)
     others: usize,
-    /// 実際に解決された起点の短縮 SHA。作業ツリー / ステージが起点なら空
+    /// 解決された起点のコミット (40 桁)。作業ツリー / ステージが起点なら空。
+    /// フロントは起点版を開く ID (rev:/<sha>/…) に使うので、短縮しない。
     start_id: String,
+    /// 同じく終点。作業ツリー / ステージなら空 (実ファイルを開けばよい)
+    end_id: String,
 }
 
 /// ウィンドウを開いたときに 1 度だけ聞く、リポジトリの素性。
@@ -307,7 +313,7 @@ pub async fn git_changes(
                     }
                     _ => unreachable!("上で弾いている"),
                 };
-                start_id = start_commit.to_hex_with_len(7).to_string();
+                start_id = start_commit.to_hex().to_string();
                 let start_tree = tree_of(&repo, start_commit)?;
                 match e {
                     Endpoint::Worktree => collect_status(&repo, start_tree, true, true, &mut acc)?,
@@ -332,19 +338,30 @@ pub async fn git_changes(
                 others += 1;
                 continue;
             }
+            let from_path = a
+                .from
+                .as_ref()
+                .map(|f| workdir.join(f).to_string_lossy().into_owned());
             entries.push(Change {
                 path: path.to_string_lossy().into_owned(),
                 rel,
                 state,
                 from: a.from,
+                from_path,
             });
         }
         entries.sort_by(|a, b| a.rel.cmp(&b.rel));
+
+        let end_id = match &end {
+            Endpoint::Worktree | Endpoint::Index => String::new(),
+            _ => end_commit.to_hex().to_string(),
+        };
 
         Ok(GitChanges {
             entries,
             others,
             start_id,
+            end_id,
         })
     })
     .await
@@ -462,4 +479,103 @@ pub async fn git_refs(root: String, end: Endpoint) -> Result<GitRefs, String> {
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+// ---------- 起点版のファイル ----------
+
+/// その地点でのファイルの中身。path は絶対パスで、そこからリポジトリを探す。
+/// 画像も読むのでバイト列で返す (テキストに限らない)。
+pub(crate) fn blob_at(rev: &str, path: &Path) -> Result<Vec<u8>, String> {
+    let dir = path.parent().ok_or_else(|| "パスが不正です".to_string())?;
+    let repo = gix::discover(dir).map_err(|e| e.to_string())?;
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| "作業ツリーがありません".to_string())?;
+    let rel = path
+        .strip_prefix(workdir)
+        .map_err(|_| "リポジトリの外です".to_string())?;
+    let id = repo
+        .rev_parse_single(rev)
+        .map_err(|_| format!("解決できません: {rev}"))?;
+    let mut tree = repo
+        .find_commit(id)
+        .map_err(|e| e.to_string())?
+        .tree()
+        .map_err(|e| e.to_string())?;
+    let entry = tree
+        .peel_to_entry_by_path(rel)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "その地点には存在しません".to_string())?;
+    // repo より長生きしないよう、いったん束縛してから複製する
+    let object = entry.object().map_err(|e| e.to_string())?;
+    let data = object.data.clone();
+    Ok(data)
+}
+
+/// 起点版の本文。Markdown を読むのに使う (画像は rev: のプロトコルが返す)。
+#[tauri::command]
+pub async fn git_blob(rev: String, path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let data = blob_at(&rev, Path::new(&path))?;
+        String::from_utf8(data).map_err(|_| "テキストとして読めません".to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// `/<sha>/<絶対パス>` を割る。POSIX は先頭のスラッシュを戻し、
+/// Windows の `C:/…` はそのまま扱う。
+pub(crate) fn split_rev_path(p: &str) -> Option<(String, PathBuf)> {
+    let (sha, rest) = p.trim_start_matches('/').split_once('/')?;
+    if sha.is_empty() || rest.is_empty() {
+        return None;
+    }
+    let win = rest.as_bytes().get(1) == Some(&b':')
+        && rest.as_bytes()[0].is_ascii_alphabetic();
+    let abs = if win { rest.to_string() } else { format!("/{rest}") };
+    Some((sha.to_string(), PathBuf::from(abs)))
+}
+
+/// 拡張子から Content-Type を当てる。ここに無いものは octet-stream にして
+/// WebView の判断に任せる (画像として貼られていれば大抵は表示される)。
+pub(crate) fn mime_of(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("svg") => "image/svg+xml",
+        Some("webp") => "image/webp",
+        Some("avif") => "image/avif",
+        Some("bmp") => "image/bmp",
+        Some("ico") => "image/x-icon",
+        Some("pdf") => "application/pdf",
+        Some("md" | "markdown" | "mdown" | "mkd") => "text/markdown; charset=utf-8",
+        Some("txt") => "text/plain; charset=utf-8",
+        _ => "application/octet-stream",
+    }
+}
+
+/// パーセントデコード。日本語のファイル名が URL で届くため必要になる。
+/// これだけのために依存を増やしたくないので自前で持つ。
+pub(crate) fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }

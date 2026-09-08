@@ -24,6 +24,23 @@ fn canonicalize(path: impl AsRef<Path>) -> std::io::Result<PathBuf> {
     dunce::canonicalize(path)
 }
 
+/// 起点版 (git のある地点でのファイル) を指す ID の接頭辞。
+/// フロントではタブのパスと同じ位置に入るので、ファイルを触る手前で見分ける。
+/// 実体はディスクに無いため、正規化も監視もしない。
+const REV_PREFIX: &str = "rev:/";
+
+fn is_rev_id(path: &str) -> bool {
+    path.starts_with(REV_PREFIX)
+}
+
+/// タブが指すものを PathBuf にする。起点版の ID はそのまま持つ。
+fn tab_target(path: &str) -> std::io::Result<PathBuf> {
+    if is_rev_id(path) {
+        return Ok(PathBuf::from(path));
+    }
+    canonicalize(path)
+}
+
 /// ウィンドウ 1 つぶんの監視。
 ///
 /// notify の watcher は 1 つで複数のパスを監視できるので、そのウィンドウが
@@ -640,7 +657,7 @@ async fn open_path(
     window: tauri::WebviewWindow,
     path: String,
 ) -> Result<OpenOutcome, String> {
-    let canon = canonicalize(&path).map_err(|e| format!("ファイルが見つかりません: {e}"))?;
+    let canon = tab_target(&path).map_err(|e| format!("ファイルが見つかりません: {e}"))?;
     let canon_str = canon.to_string_lossy().into_owned();
 
     let existing = {
@@ -841,7 +858,7 @@ fn window_rects(app: AppHandle) -> Vec<WindowRect> {
 /// (台帳は label ごとに分かれているので取り違えない)。
 #[tauri::command]
 async fn tear_out_tab(app: AppHandle, path: String, x: f64, y: f64) -> Result<(), String> {
-    let canon = canonicalize(&path).map_err(|e| format!("ファイルが見つかりません: {e}"))?;
+    let canon = tab_target(&path).map_err(|e| format!("ファイルが見つかりません: {e}"))?;
     // カーソルの少し右下にタブが来る位置に置き、落とした先のモニタへ収める
     let origin = clamp_to_monitor(&app, x - 90.0, y - 16.0);
     spawn_viewer_window_at(&app, canon.to_string_lossy().into_owned(), Some(origin))
@@ -875,7 +892,7 @@ fn clamp_to_monitor(app: &AppHandle, x: f64, y: f64) -> (f64, f64) {
 /// 自分のタブを閉じるのは呼び出し側の仕事。
 #[tauri::command]
 fn adopt_tab(app: AppHandle, label: String, path: String) -> Result<(), String> {
-    let canon = canonicalize(&path).map_err(|e| format!("ファイルが見つかりません: {e}"))?;
+    let canon = tab_target(&path).map_err(|e| format!("ファイルが見つかりません: {e}"))?;
     app.emit_to(
         label.as_str(),
         "tab:adopt",
@@ -1460,6 +1477,30 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        // 起点版のファイルを返す。画像や PDF をそのまま <img> / <embed> に
+        // 渡せるようにするためのもので、本文は git_blob が返す。
+        //
+        // URL は rev://localhost/<sha>/<絶対パス>。Windows では Tauri が
+        // http://rev.localhost/… に読み替えるが、パスの形は同じなので
+        // ここは共通で扱える。フロントは resolveAsset でこの形に組み替える。
+        .register_uri_scheme_protocol("rev", |_ctx, request| {
+            let decoded = git::percent_decode(request.uri().path());
+            let served = git::split_rev_path(&decoded)
+                .ok_or_else(|| "URL の形が違います".to_string())
+                .and_then(|(sha, path)| {
+                    git::blob_at(&sha, &path).map(|data| (git::mime_of(&path), data))
+                });
+            match served {
+                Ok((mime, data)) => tauri::http::Response::builder()
+                    .header("Content-Type", mime)
+                    .body(data)
+                    .unwrap_or_default(),
+                Err(_) => tauri::http::Response::builder()
+                    .status(tauri::http::StatusCode::NOT_FOUND)
+                    .body(Vec::new())
+                    .unwrap_or_default(),
+            }
+        })
         .manage(WatchState::default())
         .manage(OpenTabs::default())
         .manage(PendingOpen::default())
@@ -1542,7 +1583,8 @@ pub fn run() {
             export_pdf,
             git::git_probe,
             git::git_changes,
-            git::git_refs
+            git::git_refs,
+            git::git_blob
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

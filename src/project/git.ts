@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { revId } from "../shared/rev";
 
 /// 比較の端点。Rust 側の Endpoint と対。
 /// `merge-base` は「その revision と end との分岐点」で、end が決まらないと
@@ -17,9 +18,16 @@ export type Change = {
   rel: string;
   state: GitState;
   from: string | null;
+  fromPath: string | null;
 };
 
-export type GitChanges = { entries: Change[]; others: number; startId: string };
+export type GitChanges = {
+  entries: Change[];
+  others: number;
+  /// 解決した起点 / 終点のコミット (40 桁)。作業ツリー・ステージなら空
+  startId: string;
+  endId: string;
+};
 
 export type GitProbe = {
   workdir: string;
@@ -117,6 +125,10 @@ export class GitPane {
   /// ツリーの色用。範囲とは切り離して常に HEAD → 作業ツリーで取る
   private headChanges: Change[] = [];
   private others = 0;
+  private startId = "";
+  private endId = "";
+  /// 右クリックメニューが対象にしている行
+  private menuPath: string | null = null;
   private openPaths = new Set<string>();
   private activePath: string | null = null;
 
@@ -125,6 +137,7 @@ export class GitPane {
     private splitter: HTMLElement,
     private listEl: HTMLElement,
     private rangeBtn: HTMLElement,
+    private menuEl: HTMLElement,
     private opts: { onOpen: (path: string) => void; onNotice: (msg: string) => void }
   ) {
     this.listEl.addEventListener("click", (e) => {
@@ -132,6 +145,67 @@ export class GitPane {
       if (!row || row.hasAttribute("disabled")) return;
       this.opts.onOpen(row.dataset.path!);
     });
+
+    this.listEl.addEventListener("contextmenu", (e) => {
+      const row = (e.target as HTMLElement).closest<HTMLElement>("[data-path]");
+      if (!row) return;
+      e.preventDefault();
+      this.openMenu(row.dataset.path!, e.clientX, e.clientY);
+    });
+
+    this.menuEl.addEventListener("click", (e) => {
+      const item = (e.target as HTMLElement).closest<HTMLButtonElement>(".ink-git-mi");
+      if (!item || item.disabled) return;
+      const path = this.menuPath;
+      this.closeMenu();
+      if (path) this.runMenu(item.dataset.act!, path);
+    });
+
+    // メニューの外を押すか Esc で閉じる (ポップオーバーとは開き方が違うので自前)
+    document.addEventListener("mousedown", (e) => {
+      if (!this.menuEl.contains(e.target as Node)) this.closeMenu();
+    });
+    window.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") this.closeMenu();
+    });
+  }
+
+  private openMenu(path: string, x: number, y: number) {
+    const change = this.changes.find((c) => c.path === path);
+    if (!change || !this.range) return;
+    this.menuPath = path;
+
+    const item = (act: string) =>
+      this.menuEl.querySelector<HTMLButtonElement>(`[data-act="${act}"]`)!;
+    const before = item("before");
+    const after = item("after");
+    // 起点に無いもの (追加・未追跡) には変更前が無い。終点に無いもの (削除) は逆
+    before.disabled = !this.startId || change.state === "A" || change.state === "?";
+    after.disabled = change.state === "D";
+    before.querySelector(".ink-git-mi-note")!.textContent = endpointLabel(this.range.start);
+    after.querySelector(".ink-git-mi-note")!.textContent = endpointLabel(this.range.end);
+
+    this.menuEl.classList.remove("hidden");
+    const r = this.menuEl.getBoundingClientRect();
+    this.menuEl.style.left = `${Math.round(Math.min(x, window.innerWidth - r.width - 8))}px`;
+    this.menuEl.style.top = `${Math.round(Math.min(y, window.innerHeight - r.height - 8))}px`;
+  }
+
+  private closeMenu() {
+    this.menuEl.classList.add("hidden");
+    this.menuPath = null;
+  }
+
+  private runMenu(act: string, path: string) {
+    const change = this.changes.find((c) => c.path === path);
+    if (!change) return;
+    if (act === "before") {
+      // 改名なら起点側のパスは改名前のもの
+      this.opts.onOpen(revId(this.startId, change.fromPath ?? path));
+    } else {
+      // 終点が作業ツリー / ステージなら実ファイルをそのまま開く
+      this.opts.onOpen(this.endId ? revId(this.endId, path) : path);
+    }
   }
 
   /// git 管理下かどうかで、ペインごと出す / 出さないを決める。
@@ -163,6 +237,8 @@ export class GitPane {
       const res = await gitChanges(this.root, this.range.start, this.range.end);
       this.changes = res.entries;
       this.others = res.others;
+      this.startId = res.startId;
+      this.endId = res.endId;
       this.headChanges = isHead
         ? res.entries
         : (await gitChanges(this.root, { kind: "rev", spec: "HEAD" }, { kind: "worktree" }))

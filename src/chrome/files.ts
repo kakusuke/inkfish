@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { isRev, splitRev } from "../shared/rev";
 
 /// ファイル選択ダイアログに出す拡張子。txt は「開ける」が Markdown 扱いは
 /// しない (相対リンクからは開かない) ので、ここだけに入れてある。
@@ -8,11 +9,20 @@ export const MD_EXTS = ["md", "markdown", "mdown", "mkd", "mdx", "txt"];
 /// Rust 側の MD_EXTS と bundle の fileAssociations と揃えること。
 export const isMarkdownPath = (p: string) => /\.(md|markdown|mdown|mkd|mdx)$/i.test(p);
 
-export const readMdFile = (path: string) => invoke<string>("read_md_file", { path });
+/// 本文を読む。起点版 (rev:/…) なら git から、ふつうのパスならファイルから。
+export const readMdFile = (path: string) => {
+  const r = splitRev(path);
+  return r
+    ? invoke<string>("git_blob", { rev: r.sha, path: r.path })
+    : invoke<string>("read_md_file", { path });
+};
 
 /// このウィンドウが開いているファイルの変更監視を張り直す。
 /// 通知 (`md:changed`) は変更されたパスを添えて届く。
-export const watchFiles = (paths: string[]) => invoke("watch_files", { paths });
+/// 起点版は変わらないので監視の対象から外す (Rust 側でも canonicalize に
+/// 失敗して落ちるが、送らない方が意図が伝わる)。
+export const watchFiles = (paths: string[]) =>
+  invoke("watch_files", { paths: paths.filter((p) => !isRev(p)) });
 
 /// このウィンドウのタブ 1 つ。caption は front matter の title かファイル名。
 export type TabInfo = { path: string; caption: string };

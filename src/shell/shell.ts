@@ -27,6 +27,7 @@ import {
   setWindowTabs,
   watchFiles,
 } from "../chrome/files";
+import { isRev } from "../shared/rev";
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
 /// 同じ data-act を持つ要素が複数ある (ツールバーと空の状態の「フォルダを開く」)
@@ -250,8 +251,10 @@ export class AppShell {
 
     this.emptyEl.classList.add("hidden");
     this.toolbar.showCapsule();
-    $('[data-act="edit"]').classList.remove("hidden");
-    pushRecent(path, this.currentName);
+    // 起点版 (rev:/…) は実ファイルが無いのでエディタでは開けない
+    $('[data-act="edit"]').classList.toggle("hidden", isRev(path));
+    // 起点版は「最近開いたファイル」には積まない (実体が無く、開き直せないため)
+    if (!isRev(path)) pushRecent(path, this.currentName);
     // 「同じファイルは同じウィンドウ」の台帳に先に載せる。front matter の
     // title があれば applyCaption が描画中に上書きするが、描画で何かあっても
     // 台帳が空にならないよう、ここでファイル名で登録しておく。
