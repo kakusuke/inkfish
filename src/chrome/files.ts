@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { isRev, splitRev } from "../shared/rev";
+import { isVirtual, splitRev } from "../shared/rev";
 
 /// ファイル選択ダイアログに出す拡張子。txt は「開ける」が Markdown 扱いは
 /// しない (相対リンクからは開かない) ので、ここだけに入れてある。
@@ -19,10 +19,10 @@ export const readMdFile = (path: string) => {
 
 /// このウィンドウが開いているファイルの変更監視を張り直す。
 /// 通知 (`md:changed`) は変更されたパスを添えて届く。
-/// 起点版は変わらないので監視の対象から外す (Rust 側でも canonicalize に
+/// 起点版と差分は変わらないので監視の対象から外す (Rust 側でも canonicalize に
 /// 失敗して落ちるが、送らない方が意図が伝わる)。
 export const watchFiles = (paths: string[]) =>
-  invoke("watch_files", { paths: paths.filter((p) => !isRev(p)) });
+  invoke("watch_files", { paths: paths.filter((p) => !isVirtual(p)) });
 
 /// このウィンドウのタブ 1 つ。caption は front matter の title かファイル名。
 export type TabInfo = { path: string; caption: string };

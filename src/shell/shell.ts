@@ -27,7 +27,8 @@ import {
   setWindowTabs,
   watchFiles,
 } from "../chrome/files";
-import { isRev } from "../shared/rev";
+import { isRev, splitDiff } from "../shared/rev";
+import { loadSide, makeSides } from "../viewer/split";
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
 /// 同じ data-act を持つ要素が複数ある (ツールバーと空の状態の「フォルダを開く」)
@@ -60,19 +61,20 @@ export class AppShell {
   private settingsPopover!: ReturnType<PopoverGroup["register"]>;
   private windowMenu!: WindowMenu;
 
+  /// 差分 (diff:/…) を開いているときの起点側。ふつうのファイルでは null
+  private beforeViewer: DocumentViewer | null = null;
+  private beforeHost: HTMLElement | null = null;
+  private afterHost: HTMLElement | null = null;
+  private splitMode = false;
+  private resolveAsset: (absPath: string) => string;
+
   constructor(opts: { resolveAsset: (absPath: string) => string }) {
     this.emptyEl = $(".ink-empty");
     this.toast = new Toast($(".ink-toast"));
     this.toolbar = new Toolbar($(".ink-toolbar"), $(".ink-progress"));
+    this.resolveAsset = opts.resolveAsset;
 
-    this.viewer = new DocumentViewer($(".ink-content"), {
-      resolveAsset: opts.resolveAsset,
-      onCaption: ({ title, name }) => this.applyCaption(title, name),
-      onNotice: (msg) => this.toast.show(msg),
-      onProgress: (ratio) => this.toolbar.setProgress(ratio),
-      onFindUpdate: (s) => this.findBar.update(s),
-      onLinkActivate: (t) => this.handleLink(t),
-    });
+    this.viewer = this.makeViewer($(".ink-content"));
 
     this.findBar = new FindBar($(".ink-findbar"), {
       find: (q, autoScroll) => this.viewer.find(q, autoScroll),
@@ -237,7 +239,54 @@ export class AppShell {
     }
   }
 
+  /// 中身を 1 つ作る。差分のときは左右に 2 つ作るので、生成を 1 箇所にまとめる。
+  private makeViewer(container: HTMLElement, idPrefix?: string) {
+    return new DocumentViewer(container, {
+      resolveAsset: this.resolveAsset,
+      idPrefix,
+      onCaption: ({ title, name }) => this.applyCaption(title, name),
+      onNotice: (msg) => this.toast.show(msg),
+      onProgress: (ratio) => this.toolbar.setProgress(ratio),
+      onFindUpdate: (s) => this.findBar.update(s),
+      onLinkActivate: (t) => this.handleLink(t),
+    });
+  }
+
+  /// 差分かどうかで中身の器を組み替える。
+  ///
+  /// プロジェクトウィンドウから差分タブを切り離すと、この窓が差分の ID を
+  /// 開くことになる。ふつうのファイルに戻ることもあるので、両方向に組み替える。
+  /// 検索やライトボックスは this.viewer (= 終点側) に効く。
+  private setSplit(split: boolean) {
+    if (split === this.splitMode) return;
+    this.viewer.dispose();
+    this.beforeViewer?.dispose();
+    this.beforeViewer = null;
+
+    const content = $(".ink-content");
+    content.replaceChildren();
+    content.classList.remove("is-diff");
+
+    if (split) {
+      const sides = makeSides(content);
+      this.beforeHost = sides.beforeHost;
+      this.afterHost = sides.afterHost;
+      // ひとつの document に 2 つ載るので、見出しや脚注の id を分ける
+      this.beforeViewer = this.makeViewer(sides.beforeHost, "b-");
+      this.viewer = this.makeViewer(sides.afterHost, "a-");
+    } else {
+      this.beforeHost = null;
+      this.afterHost = null;
+      this.viewer = this.makeViewer(content);
+    }
+    this.splitMode = split;
+  }
+
   private async loadFile(path: string) {
+    const pair = splitDiff(path);
+    this.setSplit(!!pair);
+    if (pair) return this.loadDiff(path, pair);
+
     let source: string;
     try {
       source = await readMdFile(path);
@@ -274,6 +323,36 @@ export class AppShell {
       this.toolbar.setWatchState("error");
       this.toast.show(`変更監視を開始できませんでした: ${e}`);
     }
+  }
+
+  /// 差分 (左右 2 枚) を読む。片側にしか無いファイルは、無い側に断りを出す。
+  private async loadDiff(path: string, pair: { before: string; after: string }) {
+    if (!this.beforeViewer || !this.beforeHost || !this.afterHost) return;
+    this.currentName = basename(path) || path;
+
+    const [after, before] = await Promise.all([
+      loadSide(this.viewer, pair.after, this.afterHost, "変更後にはありません", this.currentName),
+      loadSide(
+        this.beforeViewer,
+        pair.before,
+        this.beforeHost,
+        "変更前にはありません",
+        this.currentName
+      ),
+    ]);
+    if (!after && !before) {
+      this.toast.show("どちらの版にもありません");
+      return;
+    }
+
+    this.currentPath = path;
+    // 差分は 2 枚あるので「読み込んだソースの控え」は持たない (監視もしない)
+    this.currentSource = "";
+    this.emptyEl.classList.add("hidden");
+    this.toolbar.showCapsule();
+    $('[data-act="edit"]').classList.add("hidden");
+    setWindowTabs([{ path, caption: this.currentName }], 0).catch(() => {});
+    this.toolbar.setMarpMode(false);
   }
 
   private async reload(retry = true) {

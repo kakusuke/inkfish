@@ -1,6 +1,8 @@
 import { basename, dirname } from "../shared/paths";
 import { DocumentViewer, type LinkTarget } from "../viewer/viewer";
 import { readMdFile } from "../chrome/files";
+import { loadSide, makeSides } from "../viewer/split";
+import { splitDiff } from "../shared/rev";
 import type { FindState } from "../viewer/find";
 
 let SEQ = 0;
@@ -22,7 +24,15 @@ export type TabHooks = {
 export class DocTab {
   readonly id: string;
   readonly pane: HTMLElement;
+  /// 終点側 (差分でないタブではこれだけ)。検索やライトボックスはこちらに効く
   readonly viewer: DocumentViewer;
+  /// 起点側。差分タブのときだけ左に並ぶ
+  readonly beforeViewer: DocumentViewer | null = null;
+  /// 左右の器。片側にしか無いファイルのとき、無い側に印を出すのに使う
+  private beforeHost: HTMLElement | null = null;
+  private afterHost: HTMLElement | null = null;
+  /// 差分の ID を割った結果 (左右それぞれの ID)。ふつうのタブでは null
+  private pair: { before: string; after: string } | null = null;
 
   name: string;
   /// front matter の title があればそれ、なければファイル名
@@ -41,6 +51,9 @@ export class DocTab {
     this.name = basename(path) || path;
     this.caption = this.name;
 
+    // 差分の ID (diff:/…) なら左右に並べる。ふつうのパスや起点版の ID なら 1 枚
+    this.pair = splitDiff(path);
+
     this.pane = document.createElement("div");
     // display:none ではなく visibility で隠す (project.css の注記参照)。
     // レイアウトを残さないと図とスライドの採寸が壊れる。
@@ -48,11 +61,27 @@ export class DocTab {
     this.pane.dataset.tab = this.id;
     panes.appendChild(this.pane);
 
-    this.viewer = new DocumentViewer(this.pane, {
+    let afterHost: HTMLElement = this.pane;
+    if (this.pair) {
+      const sides = makeSides(this.pane);
+      this.beforeHost = sides.beforeHost;
+      this.afterHost = sides.afterHost;
+      afterHost = sides.afterHost;
+      this.beforeViewer = new DocumentViewer(sides.beforeHost, {
+        resolveAsset: hooks.resolveAsset,
+        // ひとつの document に 2 つ載るので、見出しや脚注の id を分ける
+        idPrefix: `${this.id}-b-`,
+        onNotice: (m) => hooks.onNotice(m),
+        onLinkActivate: (t) => hooks.onLinkActivate(t),
+      });
+      void this.beforeViewer.setFrozen(true);
+    }
+
+    this.viewer = new DocumentViewer(afterHost, {
       resolveAsset: hooks.resolveAsset,
       // 見出しと脚注の id はタブごとの名前空間に分ける。ひとつの document に
       // 複数の文書が載るため、前置きしないと id が衝突する。
-      idPrefix: `${this.id}-`,
+      idPrefix: this.pair ? `${this.id}-a-` : `${this.id}-`,
       onCaption: ({ title, name }) => {
         this.caption = title || name;
         hooks.onCaption(this);
@@ -70,8 +99,30 @@ export class DocTab {
     return this.viewer.isMarp;
   }
 
+  get isDiff() {
+    return !!this.pair;
+  }
+
   /// 読み込んで描く。失敗したら理由を投げる (呼び出し側がタブを捨てる)。
+  ///
+  /// 差分タブでは片側にしか無いファイル (追加・削除) がふつうにあるので、
+  /// 無い側は空のまま印を出すだけにして、タブ自体は開いたままにする。
   async load() {
+    if (this.pair && this.beforeViewer && this.beforeHost && this.afterHost) {
+      const [after, before] = await Promise.all([
+        loadSide(this.viewer, this.pair.after, this.afterHost, "変更後にはありません", this.name),
+        loadSide(
+          this.beforeViewer,
+          this.pair.before,
+          this.beforeHost,
+          "変更前にはありません",
+          this.name
+        ),
+      ]);
+      if (!after && !before) throw new Error("どちらの版にもありません");
+      return;
+    }
+
     this.source = await readMdFile(this.path);
     await this.viewer.setSource(this.source, {
       baseDir: dirname(this.path),
@@ -109,12 +160,14 @@ export class DocTab {
     this.pane.classList.toggle("is-inactive", !active);
     // 隠れている間の再描画は溜めておく (テーマ切替でタブの数だけ走らせない)
     void this.viewer.setFrozen(!active);
+    void this.beforeViewer?.setFrozen(!active);
     if (active) this.viewer.focus();
   }
 
   dispose() {
     clearTimeout(this.reloadTimer);
     this.viewer.dispose();
+    this.beforeViewer?.dispose();
     this.pane.remove();
   }
 }

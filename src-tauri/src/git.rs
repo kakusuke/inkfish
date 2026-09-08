@@ -579,3 +579,58 @@ pub(crate) fn percent_decode(s: &str) -> String {
     }
     String::from_utf8_lossy(&out).into_owned()
 }
+
+// ---------- 行の差分 ----------
+
+/// 変わったまとまり。行番号は 0 始まりで、終端は含まない。
+/// 片側が空 (start == end) なら、もう片方だけの追加 / 削除を意味する。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Hunk {
+    before_start: u32,
+    before_end: u32,
+    after_start: u32,
+    after_end: u32,
+}
+
+/// タブの ID から中身を読む。実ファイルのパスと起点版の ID のどちらも受ける。
+pub(crate) fn read_target(id: &str) -> Result<Vec<u8>, String> {
+    match id.strip_prefix("rev:") {
+        Some(rest) => {
+            let (sha, path) =
+                split_rev_path(rest).ok_or_else(|| "ID の形が違います".to_string())?;
+            blob_at(&sha, &path)
+        }
+        None => std::fs::read(id).map_err(|e| e.to_string()),
+    }
+}
+
+/// 2 つの版の行差分。左右に並べたときの目印と、変更箇所への移動に使う。
+///
+/// 差分そのものは gix (imara-diff) が計算する。フロントは行番号を
+/// markdown-it のトークンが持つ行範囲と突き合わせて、変わったブロックに
+/// 印を付ける。
+#[tauri::command]
+pub async fn git_hunks(before: String, after: String) -> Result<Vec<Hunk>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let a = String::from_utf8(read_target(&before)?)
+            .map_err(|_| "テキストとして読めません".to_string())?;
+        let b = String::from_utf8(read_target(&after)?)
+            .map_err(|_| "テキストとして読めません".to_string())?;
+
+        use gix::diff::blob::{Algorithm, Diff, InternedInput};
+        let input = InternedInput::new(a.as_str(), b.as_str());
+        let diff = Diff::compute(Algorithm::Histogram, &input);
+        Ok(diff
+            .hunks()
+            .map(|h| Hunk {
+                before_start: h.before.start,
+                before_end: h.before.end,
+                after_start: h.after.start,
+                after_end: h.after.end,
+            })
+            .collect())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { revId } from "../shared/rev";
+import { diffId, revId } from "../shared/rev";
 
 /// 比較の端点。Rust 側の Endpoint と対。
 /// `merge-base` は「その revision と end との分岐点」で、end が決まらないと
@@ -142,8 +142,8 @@ export class GitPane {
   ) {
     this.listEl.addEventListener("click", (e) => {
       const row = (e.target as HTMLElement).closest<HTMLElement>("[data-path]");
-      if (!row || row.hasAttribute("disabled")) return;
-      this.opts.onOpen(row.dataset.path!);
+      if (!row) return;
+      this.openChange(row.dataset.path!, "diff");
     });
 
     this.listEl.addEventListener("contextmenu", (e) => {
@@ -177,8 +177,10 @@ export class GitPane {
 
     const item = (act: string) =>
       this.menuEl.querySelector<HTMLButtonElement>(`[data-act="${act}"]`)!;
+    const diff = item("diff");
     const before = item("before");
     const after = item("after");
+    diff.disabled = !this.startId;
     // 起点に無いもの (追加・未追跡) には変更前が無い。終点に無いもの (削除) は逆
     before.disabled = !this.startId || change.state === "A" || change.state === "?";
     after.disabled = change.state === "D";
@@ -197,15 +199,30 @@ export class GitPane {
   }
 
   private runMenu(act: string, path: string) {
+    this.openChange(path, act as "diff" | "before" | "after");
+  }
+
+  /// 変更の行を開く。片側にしか無いもの (追加・削除) は、並べても仕方がないので
+  /// 存在する側だけを開く。
+  private openChange(path: string, mode: "diff" | "before" | "after") {
     const change = this.changes.find((c) => c.path === path);
     if (!change) return;
-    if (act === "before") {
-      // 改名なら起点側のパスは改名前のもの
-      this.opts.onOpen(revId(this.startId, change.fromPath ?? path));
-    } else {
-      // 終点が作業ツリー / ステージなら実ファイルをそのまま開く
-      this.opts.onOpen(this.endId ? revId(this.endId, path) : path);
+    // 改名なら起点側のパスは改名前のもの
+    const before = this.startId ? revId(this.startId, change.fromPath ?? path) : null;
+    // 終点が作業ツリー / ステージなら実ファイルをそのまま開く
+    const after = this.endId ? revId(this.endId, path) : path;
+    if (mode === "before") {
+      if (before) this.opts.onOpen(before);
+      return;
     }
+    if (mode === "after") {
+      if (change.state !== "D") this.opts.onOpen(after);
+      return;
+    }
+    // 差分そのものを 1 つの ID にして開く。片側にしか無いファイルも並べる
+    // (無い側はその旨を出す)。改名は終点側のパスで指す。
+    if (this.startId) this.opts.onOpen(diffId(this.startId, this.endId, change.path));
+    else this.opts.onOpen(after);
   }
 
   /// git 管理下かどうかで、ペインごと出す / 出さないを決める。
@@ -295,11 +312,8 @@ export class GitPane {
       row.className = "ink-git-row";
       row.dataset.path = c.path;
       row.setAttribute("role", "listitem");
-      // 削除されたファイルは開けない (フェーズ 1 では起点の中身を出さないため)
-      if (c.state === "D") {
-        row.classList.add("is-gone");
-        row.setAttribute("disabled", "");
-      }
+      // 削除されたファイルも、起点版と並べる形でなら開ける
+      if (c.state === "D") row.classList.add("is-gone");
 
       const badge = document.createElement("span");
       badge.className = "ink-git-badge";

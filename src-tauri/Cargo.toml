@@ -26,7 +26,7 @@ dunce = "1"
 ignore = "0.4"
 # git 連携 (src/git.rs)。gitoxide は pure Rust なので C ツールチェーンは要らず、
 # 外部の git コマンドにも依存しない。既定の feature は使わない (依存が増えるだけ)。
-gix = { version = "0.87", default-features = false, features = ["status", "revision", "sha1"] }
+gix = { version = "0.87", default-features = false, features = ["status", "revision", "sha1", "blob-diff"] }
 
 # PDF 書き出し (WKWebView.createPDF) のための Objective-C ブリッジ
 [target.'cfg(target_os = "macos")'.dependencies]

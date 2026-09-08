@@ -28,7 +28,7 @@ import { shortenPath } from "../shared/paths";
 import { DocTab } from "./tab";
 import { TreePane } from "./tree";
 import { GitPane, RangeMenu } from "./git";
-import { isRev } from "../shared/rev";
+import { isRev, isVirtual } from "../shared/rev";
 import type { Range as GitRange } from "./git";
 import { TabStrip, type TabView } from "./tabs";
 
@@ -412,9 +412,9 @@ export class ProjectShell {
   /// プロジェクトウィンドウからの要求は、他の窓が開いていなければ
   /// "load-here" (= この窓のタブ) になる。
   private async openPath(path: string) {
-    // 起点版は実ファイルではないので、窓の振り分け (open_path は canonicalize
-    // する) を通さずこのウィンドウのタブで開く
-    if (isRev(path)) return this.openTab(path);
+    // 起点版と差分は実ファイルではないので、窓の振り分け (open_path は
+    // canonicalize する) を通さずこのウィンドウのタブで開く
+    if (isVirtual(path)) return this.openTab(path);
     try {
       const outcome = await requestOpen(path);
       // "focused" のときは md:activate が飛んでくるので何もしない
@@ -547,6 +547,7 @@ export class ProjectShell {
       caption: t.caption,
       name: t.name,
       marp: t.isMarp,
+      diff: t.isDiff,
     }));
     this.strip.render(views, this.activeId);
     this.emptyEl.classList.toggle("hidden", this.tabs.length > 0);

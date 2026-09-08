@@ -24,18 +24,18 @@ fn canonicalize(path: impl AsRef<Path>) -> std::io::Result<PathBuf> {
     dunce::canonicalize(path)
 }
 
-/// 起点版 (git のある地点でのファイル) を指す ID の接頭辞。
-/// フロントではタブのパスと同じ位置に入るので、ファイルを触る手前で見分ける。
-/// 実体はディスクに無いため、正規化も監視もしない。
-const REV_PREFIX: &str = "rev:/";
+/// 実体がディスクに無い ID の接頭辞。起点版 (rev:/<sha>/…) と、2 つの版を
+/// 並べて見る差分 (diff:/<sha>-<sha>/…)。どちらもフロントではタブのパスと
+/// 同じ位置に入るので、ファイルを触る手前で見分けて、正規化も監視もしない。
+const VIRTUAL_PREFIXES: [&str; 2] = ["rev:/", "diff:/"];
 
-fn is_rev_id(path: &str) -> bool {
-    path.starts_with(REV_PREFIX)
+fn is_virtual_id(path: &str) -> bool {
+    VIRTUAL_PREFIXES.iter().any(|p| path.starts_with(p))
 }
 
-/// タブが指すものを PathBuf にする。起点版の ID はそのまま持つ。
+/// タブが指すものを PathBuf にする。実体の無い ID はそのまま持つ。
 fn tab_target(path: &str) -> std::io::Result<PathBuf> {
-    if is_rev_id(path) {
+    if is_virtual_id(path) {
         return Ok(PathBuf::from(path));
     }
     canonicalize(path)
@@ -1584,7 +1584,8 @@ pub fn run() {
             git::git_probe,
             git::git_changes,
             git::git_refs,
-            git::git_blob
+            git::git_blob,
+            git::git_hunks
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

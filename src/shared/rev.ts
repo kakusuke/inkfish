@@ -50,3 +50,40 @@ export function assetUrl(idOrPath: string, convertFileSrc: (p: string) => string
   const r = splitRev(idOrPath);
   return r ? revAssetUrl(r.sha, r.path) : convertFileSrc(idOrPath);
 }
+
+// ---------- 2 つの版を並べて見る ----------
+//
+// 起点版と同じ考えで、差分そのものにも ID を与える。こうすると差分タブも
+// 「1 つの ID を開いているタブ」になり、切り離しても取り込んでも、ふつうの
+// ファイルと同じ道を通る (単一文書ウィンドウでも左右に並ぶ)。
+//
+//   diff:/<起点 sha>-<終点 sha>/Users/…/docs/guide.md
+//   diff:/<起点 sha>-/Users/…/docs/guide.md   ← 終点が作業ツリーなら後ろは空
+//
+// sha は 40 桁の 16 進なのでハイフンを含まず、1 つ目の区切りで割れる。
+
+const DIFF_PREFIX = "diff:/";
+
+export const isDiff = (id: string) => id.startsWith(DIFF_PREFIX);
+
+export const diffId = (beforeSha: string, afterSha: string, abs: string) =>
+  `${DIFF_PREFIX}${beforeSha}-${afterSha}/${abs.replace(/^\//, "")}`;
+
+/// 差分の ID を、左右それぞれの ID に割る。
+/// 終点の sha が空なら、右は実ファイルのパスになる。
+export function splitDiff(id: string): { before: string; after: string } | null {
+  if (!isDiff(id)) return null;
+  const rest = id.slice(DIFF_PREFIX.length);
+  const i = rest.indexOf("/");
+  if (i <= 0) return null;
+  const [beforeSha, afterSha = ""] = rest.slice(0, i).split("-");
+  if (!beforeSha) return null;
+  const tail = rest.slice(i + 1);
+  if (!tail) return null;
+  // POSIX は先頭のスラッシュを戻す (Windows の "C:/…" はそのまま)
+  const abs = /^[a-z]:/i.test(tail) ? tail : `/${tail}`;
+  return { before: revId(beforeSha, abs), after: afterSha ? revId(afterSha, abs) : abs };
+}
+
+/// 実体がディスクに無い ID (起点版・差分)。監視や正規化の対象から外す。
+export const isVirtual = (id: string) => isRev(id) || isDiff(id);

@@ -545,3 +545,37 @@ body.is-exporting .ink-toast,
 body.is-exporting .ink-linkstatus {
   display: none !important;
 }
+
+/* ============================================================
+   2 つの版を左右に並べる (差分)
+   プロジェクトのタブでも、切り離した単一文書ウィンドウでも同じ形を使う。
+   ============================================================ */
+.is-diff {
+  display: flex;
+}
+
+.ink-diff-side {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  /* 上端の逃げは外側の器が持つ */
+  --ink-chrome-top: 0px;
+}
+
+.ink-diff-side[data-side="before"] {
+  border-right: 1px solid var(--line);
+}
+
+/* その版には無いファイル (追加・削除)。空で並べるより、無いと言う方が伝わる */
+.ink-diff-side.is-absent::after {
+  content: attr(data-absent);
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  color: var(--ink-2);
+  font-size: 12.5px;
+}
