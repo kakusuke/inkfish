@@ -928,11 +928,17 @@ fn get_startup_file(
 
 /// プロジェクトウィンドウが起動時に開くルートを返す。
 ///
+/// PendingProject は JS が起動する前にルートを積んでおくための箱で、取り出したら
+/// 消える。webview が読み込み直されると 2 回目は空になり、ツリーもタブも出せなく
+/// なってしまうので、ウィンドウが閉じるまで残る ProjectRoots に落とす
+/// (dev の HMR で毎回そうなるほか、webview が再読み込みされたときの備えでもある)。
+///
 /// あわせて空のウィンドウを片付ける。ディレクトリを開くとプロジェクト
 /// ウィンドウが新しく出るので、それを頼んだ空の窓 (起動直後の main など) が
 /// 使われないまま残ってしまう。ここでやるのは、この時点なら他の窓が
 /// すべて作られていて「本当に空か」を判定できるため
 /// (CLI / Finder / メニュー / D&D のどの経路でも同じ後始末になる)。
+/// 2 度目に呼ばれても、この窓は ProjectRoots にあるので空とは見なされない。
 #[tauri::command]
 fn get_project_root(app: AppHandle, window: tauri::WebviewWindow) -> Option<String> {
     let root = app
@@ -940,7 +946,15 @@ fn get_project_root(app: AppHandle, window: tauri::WebviewWindow) -> Option<Stri
         .0
         .lock()
         .unwrap()
-        .remove(window.label());
+        .remove(window.label())
+        .or_else(|| {
+            app.state::<ProjectRoots>()
+                .0
+                .lock()
+                .unwrap()
+                .get(window.label())
+                .map(|p| p.to_string_lossy().into_owned())
+        });
     close_empty_windows(&app, window.label());
     root
 }
