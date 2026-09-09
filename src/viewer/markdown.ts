@@ -37,8 +37,11 @@ md.renderer.rules.fence = (tokens, idx, options, env, self) => {
   if (lang === "mermaid") {
     // 差分の印はブロックの器に付ける (既定の fence は <code> に出してしまう)
     const kind = token.attrGet("data-change");
-    const mark = kind ? ` ink-changed" data-change="${kind}` : "";
-    return `<div class="mermaid-block${mark}">${md.utils.escapeHtml(token.content)}</div>`;
+    const hunk = token.attrGet("data-hunk") ?? "0";
+    const line = token.attrGet("data-line");
+    const mark = kind ? ` ink-changed" data-change="${kind}" data-hunk="${hunk}` : "";
+    const at = line ? `" data-line="${line}` : "";
+    return `<div class="mermaid-block${mark}${at}">${md.utils.escapeHtml(token.content)}</div>`;
   }
   return defaultFence(tokens, idx, options, env, self);
 };
@@ -50,20 +53,38 @@ md.renderer.rules.fence = (tokens, idx, options, env, self) => {
 // 図もスライドも表も、ふつうに描いたものがそのまま印つきになる。
 // 入れ子の内側にも付くと縦線が二重に出るので、いちばん外の段だけを見る。
 md.core.ruler.push("ink-changed", (state) => {
-  const lines = (state.env as { changedLines?: Map<number, string> } | undefined)?.changedLines;
+  type At = { kind: string; hunk: number };
+  const env = state.env as
+    | { changedLines?: Map<number, At>; lineOffset?: number }
+    | undefined;
+  const lines = env?.changedLines;
   if (!lines?.size) return;
+
+  // 左右の位置を合わせるのに、ブロックが元テキストの何行目から始まるかも要る
+  // (行と画面上の位置を突き合わせる: viewer/split.ts)
+  const offset = env?.lineOffset ?? 0;
+  for (const token of state.tokens) {
+    if (token.level === 0 && token.map) {
+      token.attrSet("data-line", String(token.map[0] + offset));
+    }
+  }
+
   for (const token of state.tokens) {
     if (token.level !== 0 || !token.map) continue;
     let kind: string | undefined;
+    let hunk: number | undefined;
     for (let i = token.map[0]; i < token.map[1]; i++) {
-      const k = lines.get(i);
-      if (!k) continue;
+      const at = lines.get(i);
+      if (!at) continue;
       // 追加と削除が混ざるまとまりは「変更」として扱う
-      kind = kind && kind !== k ? "mod" : k;
+      kind = kind && kind !== at.kind ? "mod" : at.kind;
+      // 番号は最初のものを持つ (左右を突き合わせて位置を揃えるのに使う)
+      hunk ??= at.hunk;
     }
     if (!kind) continue;
     token.attrJoin("class", "ink-changed");
     token.attrSet("data-change", kind);
+    token.attrSet("data-hunk", String(hunk ?? 0));
   }
 });
 
@@ -81,6 +102,12 @@ export function enhanceCodeBlocks(root: HTMLElement, onError: (msg: string) => v
     const wrap = document.createElement("div");
     wrap.className = "code-block";
     if (lang) wrap.dataset.lang = lang;
+    // 行の目印も器へ移す (pre の中に埋もれると位置合わせで拾えない)
+    const line = code?.getAttribute("data-line");
+    if (line) {
+      wrap.dataset.line = line;
+      code!.removeAttribute("data-line");
+    }
     // 差分の印は <code> に付いてくる (markdown-it の fence が属性をそこへ出す)。
     // 線は他のブロックと同じ左端に出したいので、いちばん外の器へ移す。
     if (code?.classList.contains("ink-changed")) {
@@ -90,6 +117,11 @@ export function enhanceCodeBlocks(root: HTMLElement, onError: (msg: string) => v
       if (kind) {
         wrap.dataset.change = kind;
         code.removeAttribute("data-change");
+      }
+      const hunk = code.getAttribute("data-hunk");
+      if (hunk) {
+        wrap.dataset.hunk = hunk;
+        code.removeAttribute("data-hunk");
       }
     }
     pre.replaceWith(wrap);

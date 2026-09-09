@@ -28,7 +28,7 @@ import {
   watchFiles,
 } from "../chrome/files";
 import { isRev, splitDiff } from "../shared/rev";
-import { loadPair, makeSides } from "../viewer/split";
+import { keepSynced, loadPair, makeSides, type DiffSync, type Hunk } from "../viewer/split";
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
 /// 同じ data-act を持つ要素が複数ある (ツールバーと空の状態の「フォルダを開く」)
@@ -66,6 +66,9 @@ export class AppShell {
   private beforeHost: HTMLElement | null = null;
   private afterHost: HTMLElement | null = null;
   private splitMode = false;
+  private sync: DiffSync | null = null;
+  /// 行差分。左右の位置合わせに使う
+  private hunks: Hunk[] = [];
   private resolveAsset: (absPath: string) => string;
 
   constructor(opts: { resolveAsset: (absPath: string) => string }) {
@@ -185,6 +188,12 @@ export class AppShell {
 
     window.addEventListener("keydown", (e) => {
       if (!(e.metaKey || e.ctrlKey)) return;
+      // 差分で並べているときは上下で変わったところを渡り歩く
+      if (e.altKey && (e.key === "ArrowDown" || e.key === "ArrowUp") && this.sync) {
+        e.preventDefault();
+        this.sync.jump(e.key === "ArrowDown" ? 1 : -1);
+        return;
+      }
       switch (e.key) {
         case "o": e.preventDefault(); this.pickFile(); break;
         case "e": e.preventDefault(); this.editCurrent(); break;
@@ -259,6 +268,8 @@ export class AppShell {
   /// 検索やライトボックスは this.viewer (= 終点側) に効く。
   private setSplit(split: boolean) {
     if (split === this.splitMode) return;
+    this.sync?.stop();
+    this.sync = null;
     this.viewer.dispose();
     this.beforeViewer?.dispose();
     this.beforeViewer = null;
@@ -274,6 +285,15 @@ export class AppShell {
       // ひとつの document に 2 つ載るので、見出しや脚注の id を分ける
       this.beforeViewer = this.makeViewer(sides.beforeHost, "b-");
       this.viewer = this.makeViewer(sides.afterHost, "a-");
+      // 左右の動きを合わせる。スクロールは content が受け持ち、中身はずらす
+      this.sync = keepSynced(
+        content,
+        sides.track,
+        sides.viewport,
+        this.beforeViewer,
+        this.viewer,
+        () => this.hunks
+      );
     } else {
       this.beforeHost = null;
       this.afterHost = null;
@@ -339,6 +359,9 @@ export class AppShell {
       this.toast.show("どちらの版にもありません");
       return;
     }
+    this.hunks = got.hunks;
+    this.sync?.toTop();
+    this.sync?.refresh();
 
     this.currentPath = path;
     // 差分は 2 枚あるので「読み込んだソースの控え」は持たない (監視もしない)

@@ -356,6 +356,13 @@ export class ProjectShell {
       if (!(e.metaKey || e.ctrlKey)) return;
       const viewer = this.active?.viewer;
       // ⌘⌥← / → でタブを移動
+      // 差分で並べているときは上下で変わったところを渡り歩く
+      if (e.altKey && (e.key === "ArrowDown" || e.key === "ArrowUp") && this.active?.sync) {
+        e.preventDefault();
+        this.active.sync.jump(e.key === "ArrowDown" ? 1 : -1);
+        return;
+      }
+
       if (e.altKey && (e.key === "ArrowRight" || e.key === "ArrowLeft")) {
         e.preventDefault();
         this.step(e.key === "ArrowRight" ? 1 : -1);

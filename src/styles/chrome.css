@@ -550,14 +550,32 @@ body.is-exporting .ink-linkstatus {
    2 つの版を左右に並べる (差分)
    プロジェクトのタブでも、切り離した単一文書ウィンドウでも同じ形を使う。
    ============================================================ */
+/* スクロールするのは外枠だけ。中の左右は transform でずらす (split.ts)。
+   こうすると慣性スクロールは OS の作法のまま効き、左右の進み方だけを
+   別々に調整できる。 */
 .is-diff {
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* 高さを持つだけの層。長い側に合わせて JS が伸ばす */
+.ink-diff-track {
+  position: relative;
+}
+
+/* 画面に貼り付いて動かない層。この中で中身がずれる */
+.ink-diff-viewport {
+  position: sticky;
+  top: 0;
   display: flex;
+  overflow: hidden;
 }
 
 .ink-diff-side {
   position: relative;
   flex: 1;
   min-width: 0;
+  height: 100%;
   overflow: hidden;
   /* 上端の逃げは外側の器が持つ */
   --ink-chrome-top: 0px;
@@ -565,6 +583,18 @@ body.is-exporting .ink-linkstatus {
 
 .ink-diff-side[data-side="before"] {
   border-right: 1px solid var(--line);
+}
+
+/* 中身は自分ではスクロールしない */
+.is-diff .ink-viewer {
+  height: 100%;
+  overflow: hidden;
+  scrollbar-gutter: auto;
+}
+
+/* ずらすのは本文そのもの。動きを滑らかにする */
+.is-diff .ink-doc {
+  will-change: transform;
 }
 
 /* その版には無いファイル (追加・削除)。空で並べるより、無いと言う方が伝わる */

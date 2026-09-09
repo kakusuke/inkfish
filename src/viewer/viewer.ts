@@ -1,7 +1,7 @@
 import DOMPurify from "dompurify";
 import { SCHEME, resolvePath } from "../shared/paths";
 import { md, enhanceCodeBlocks } from "./markdown";
-import type { ChangeKind } from "./split";
+import type { ChangeAt } from "./split";
 import { buildFrontMatterCard, fmTitle, parseFrontMatter } from "./frontmatter";
 import { applyMarpBrowser, fixSlideAspectRatio, isMarpDocument, renderMarp } from "./marp";
 import type { MarpCoreBrowser } from "@marp-team/marp-core/browser";
@@ -55,7 +55,7 @@ export class DocumentViewer {
 
   private source = "";
   /// 差分で変わった行 (元テキストの 0 始まり)。印を付けるためだけに持つ
-  private changedLines: Map<number, ChangeKind> | null = null;
+  private changedLines: Map<number, ChangeAt> | null = null;
   /// 変更の線を引き直すのを 1 フレームにまとめるための印
   private barsQueued = false;
   private barObserver: ResizeObserver;
@@ -143,7 +143,7 @@ export class DocumentViewer {
   /// 渡すと、その行を含むブロックに印が付く。左右に並べるときにガワが渡す。
   async setSource(
     src: string,
-    meta: { baseDir: string; name: string; changedLines?: Map<number, ChangeKind> }
+    meta: { baseDir: string; name: string; changedLines?: Map<number, ChangeAt> }
   ) {
     this.source = src;
     this.baseDir = meta.baseDir;
@@ -153,6 +153,18 @@ export class DocumentViewer {
     await this.render();
   }
 
+  /// 本文の器。差分で左右の位置を合わせるとき、ガワが寸法を測るのに使う。
+  get contentEl(): HTMLElement {
+    return this.docEl;
+  }
+
+  /// スクロールの器。差分では自分ではスクロールしないが、中身の高さを
+  /// 測るのに使う (連動は split.ts が受け持つ)。
+  get scrollEl(): HTMLElement {
+    return this.root;
+  }
+
+  /// 読書位置 (0..1)。左右に並べたときの連動に使う。
   /// 表示されていない間は描画そのものを止める。凍結を解くときにまとめて描く。
   ///
   /// タブの切り替えで使う。ファイルの変更やテーマの切り替えは全タブに
@@ -313,8 +325,10 @@ export class DocumentViewer {
       const env = this.changedLines
         ? {
             changedLines: new Map(
-              Array.from(this.changedLines, ([n, kind]) => [n - fm.offset, kind] as const)
+              Array.from(this.changedLines, ([n, at]) => [n - fm.offset, at] as const)
             ),
+            // ブロックに持たせる行番号は元テキストのものに戻す
+            lineOffset: fm.offset,
           }
         : {};
       // md ファイル内の生 HTML 経由の XSS (IPC 到達) を防ぐためサニタイズする

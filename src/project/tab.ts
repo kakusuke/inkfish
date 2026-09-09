@@ -1,7 +1,7 @@
 import { basename, dirname } from "../shared/paths";
 import { DocumentViewer, type LinkTarget } from "../viewer/viewer";
 import { readMdFile } from "../chrome/files";
-import { loadPair, makeSides } from "../viewer/split";
+import { keepSynced, loadPair, makeSides, type DiffSync, type Hunk } from "../viewer/split";
 import { splitDiff } from "../shared/rev";
 import type { FindState } from "../viewer/find";
 
@@ -33,6 +33,12 @@ export class DocTab {
   private afterHost: HTMLElement | null = null;
   /// 差分の ID を割った結果 (左右それぞれの ID)。ふつうのタブでは null
   private pair: { before: string; after: string } | null = null;
+  private track: HTMLElement | null = null;
+  private viewport: HTMLElement | null = null;
+  /// 差分タブの左右連動。ジャンプもここが受け持つ
+  sync: DiffSync | null = null;
+  /// 行差分。左右の位置合わせに使う
+  private hunks: Hunk[] = [];
 
   name: string;
   /// front matter の title があればそれ、なければファイル名
@@ -66,6 +72,8 @@ export class DocTab {
       const sides = makeSides(this.pane);
       this.beforeHost = sides.beforeHost;
       this.afterHost = sides.afterHost;
+      this.track = sides.track;
+      this.viewport = sides.viewport;
       afterHost = sides.afterHost;
       this.beforeViewer = new DocumentViewer(sides.beforeHost, {
         resolveAsset: hooks.resolveAsset,
@@ -93,6 +101,17 @@ export class DocTab {
     });
     // 表に出るまで再描画を溜める
     void this.viewer.setFrozen(true);
+    // 左右の動きを合わせる。スクロールはタブの器が受け持ち、中身はずらす
+    if (this.beforeViewer && this.track && this.viewport) {
+      this.sync = keepSynced(
+        this.pane,
+        this.track,
+        this.viewport,
+        this.beforeViewer,
+        this.viewer,
+        () => this.hunks
+      );
+    }
   }
 
   get isMarp() {
@@ -115,6 +134,9 @@ export class DocTab {
         this.name
       );
       if (!got.before && !got.after) throw new Error("どちらの版にもありません");
+      this.hunks = got.hunks;
+      this.sync?.toTop();
+      this.sync?.refresh();
       return;
     }
 
@@ -160,6 +182,7 @@ export class DocTab {
   }
 
   dispose() {
+    this.sync?.stop();
     clearTimeout(this.reloadTimer);
     this.viewer.dispose();
     this.beforeViewer?.dispose();
