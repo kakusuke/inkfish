@@ -9,11 +9,14 @@ export type FrontMatter = {
   data: Record<string, unknown> | null;
   // front matter を取り除いた本文。切り出せなかったときはソースそのまま
   body: string;
+  // body がソースの何行目から始まるか (0 始まり)。差分の行番号を本文側の
+  // 行番号に直すのに使う
+  offset: number;
   // front matter らしいブロックはあったが YAML として読めなかった
   broken: boolean;
 };
 
-const NO_FM = (src: string): FrontMatter => ({ data: null, body: src, broken: false });
+const NO_FM = (src: string): FrontMatter => ({ data: null, body: src, broken: false, offset: 0 });
 
 // js-yaml は front matter 付きの文書に当たるまで読み込まない。
 // ライブラリのハンドルなのでモジュールレベルで共有してよい。
@@ -34,11 +37,13 @@ export async function parseFrontMatter(src: string): Promise<FrontMatter> {
     data = (await getYamlLoad())(m[1]);
   } catch {
     // 読めなかったものを黙って隠すと原因が追えないので、本文はそのまま出す
-    return { data: null, body: src, broken: true };
+    return { data: null, body: src, broken: true, offset: 0 };
   }
   // マップ以外 (`---` 区切りの水平線や setext 見出しを拾ってしまった場合など) は
   // front matter と見なさず、これまで通り Markdown として描く
-  return isPlainObject(data) ? { data, body: src.slice(m[0].length), broken: false } : NO_FM(src);
+  if (!isPlainObject(data)) return NO_FM(src);
+  const offset = (m[0].match(/\n/g) ?? []).length;
+  return { data, body: src.slice(m[0].length), broken: false, offset };
 }
 
 // 慣習的に意味の決まっているキーだけ位置と見せ方を決め打ちする。GitHub Docs /

@@ -4,9 +4,40 @@
 // 両方が同じ形を使う。差分そのものに ID (diff:/…) を与えたので、どちらの
 // ガワでも「その ID を開いているだけ」になり、置き場所が違うだけで済む。
 
+import { invoke } from "@tauri-apps/api/core";
 import type { DocumentViewer } from "./viewer";
 import { dirname } from "../shared/paths";
 import { readMdFile } from "../chrome/files";
+
+/// 変わったまとまり。行番号は 0 始まりで終端を含まない (Rust 側と対)。
+export type Hunk = {
+  beforeStart: number;
+  beforeEnd: number;
+  afterStart: number;
+  afterEnd: number;
+};
+
+const gitHunks = (before: string, after: string) =>
+  invoke<Hunk[]>("git_hunks", { before, after });
+
+/// 変わった行 → その変わり方。印の色を分けるのに使う。
+export type ChangeKind = "add" | "del" | "mod";
+
+/// hunk を「変わった行」に直す。
+///
+/// 片側が空のまとまりは純粋な追加 / 削除で、その側には行が無いので印も付かない
+/// (追加は終点側にだけ緑、削除は起点側にだけ赤が出る)。両側にあるものは変更。
+function linesOf(hunks: Hunk[], side: "before" | "after"): Map<number, ChangeKind> {
+  const out = new Map<number, ChangeKind>();
+  for (const h of hunks) {
+    const kind: ChangeKind =
+      h.beforeStart === h.beforeEnd ? "add" : h.afterStart === h.afterEnd ? "del" : "mod";
+    const start = side === "before" ? h.beforeStart : h.afterStart;
+    const end = side === "before" ? h.beforeEnd : h.afterEnd;
+    for (let i = start; i < end; i++) out.set(i, kind);
+  }
+  return out;
+}
 
 /// 器を左右に割る。DocumentViewer は渡された器の中に自分の DOM を組むので、
 /// 側を 2 つ用意してそれぞれに載せればよい。
@@ -32,7 +63,8 @@ export async function loadSide(
   id: string,
   host: HTMLElement,
   absentLabel: string,
-  name: string
+  name: string,
+  changedLines?: Map<number, ChangeKind>
 ): Promise<boolean> {
   let src: string;
   try {
@@ -43,7 +75,37 @@ export async function loadSide(
     return false;
   }
   host.classList.remove("is-absent");
-  await viewer.setSource(src, { baseDir: dirname(id), name });
+  await viewer.setSource(src, { baseDir: dirname(id), name, changedLines });
   viewer.scrollToTop();
   return true;
+}
+
+/// 左右をまとめて読む。行差分も取って、変わったブロックに印が出るようにする。
+///
+/// 差分が取れなくても中身は見せられるので、失敗したら印なしで進む。
+export async function loadPair(
+  before: { viewer: DocumentViewer; id: string; host: HTMLElement },
+  after: { viewer: DocumentViewer; id: string; host: HTMLElement },
+  name: string
+): Promise<{ before: boolean; after: boolean }> {
+  const hunks = await gitHunks(before.id, after.id).catch(() => [] as Hunk[]);
+  const [a, b] = await Promise.all([
+    loadSide(
+      after.viewer,
+      after.id,
+      after.host,
+      "変更後にはありません",
+      name,
+      linesOf(hunks, "after")
+    ),
+    loadSide(
+      before.viewer,
+      before.id,
+      before.host,
+      "変更前にはありません",
+      name,
+      linesOf(hunks, "before")
+    ),
+  ]);
+  return { after: a, before: b };
 }

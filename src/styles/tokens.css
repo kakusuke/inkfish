@@ -21,6 +21,7 @@
   /* git の状態。ツリーは色だけ、変更ペインは色 + 1 文字のバッジで使う */
   --git-modified: #b06a00;
   --git-added: #2c7a39;
+  --git-deleted: #b3453f;
   --git-conflict: #d4504c;
 
   /* code syntax (GitHub 系・可読性優先) */
@@ -47,6 +48,7 @@
 
     --git-modified: #e0a458;
     --git-added: #6fcf7f;
+    --git-deleted: #f0837c;
     --git-conflict: #ff7b72;
 
     --hl-kw: #ff7b72;

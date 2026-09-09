@@ -35,10 +35,37 @@ md.renderer.rules.fence = (tokens, idx, options, env, self) => {
   const token = tokens[idx];
   const lang = token.info.trim().split(/\s+/)[0];
   if (lang === "mermaid") {
-    return `<div class="mermaid-block">${md.utils.escapeHtml(token.content)}</div>`;
+    // 差分の印はブロックの器に付ける (既定の fence は <code> に出してしまう)
+    const kind = token.attrGet("data-change");
+    const mark = kind ? ` ink-changed" data-change="${kind}` : "";
+    return `<div class="mermaid-block${mark}">${md.utils.escapeHtml(token.content)}</div>`;
   }
   return defaultFence(tokens, idx, options, env, self);
 };
+
+// 差分で変わった行を含むブロックに印を付ける。
+//
+// markdown-it のトークンは元テキストの行範囲 (token.map) を持っているので、
+// 変わった行の集合と重ねるだけでよい。レンダリング自体には手を触れないので、
+// 図もスライドも表も、ふつうに描いたものがそのまま印つきになる。
+// 入れ子の内側にも付くと縦線が二重に出るので、いちばん外の段だけを見る。
+md.core.ruler.push("ink-changed", (state) => {
+  const lines = (state.env as { changedLines?: Map<number, string> } | undefined)?.changedLines;
+  if (!lines?.size) return;
+  for (const token of state.tokens) {
+    if (token.level !== 0 || !token.map) continue;
+    let kind: string | undefined;
+    for (let i = token.map[0]; i < token.map[1]; i++) {
+      const k = lines.get(i);
+      if (!k) continue;
+      // 追加と削除が混ざるまとまりは「変更」として扱う
+      kind = kind && kind !== k ? "mod" : k;
+    }
+    if (!kind) continue;
+    token.attrJoin("class", "ink-changed");
+    token.attrSet("data-change", kind);
+  }
+});
 
 export const escapeHtml = (s: string) => md.utils.escapeHtml(s);
 
@@ -54,6 +81,17 @@ export function enhanceCodeBlocks(root: HTMLElement, onError: (msg: string) => v
     const wrap = document.createElement("div");
     wrap.className = "code-block";
     if (lang) wrap.dataset.lang = lang;
+    // 差分の印は <code> に付いてくる (markdown-it の fence が属性をそこへ出す)。
+    // 線は他のブロックと同じ左端に出したいので、いちばん外の器へ移す。
+    if (code?.classList.contains("ink-changed")) {
+      code.classList.remove("ink-changed");
+      wrap.classList.add("ink-changed");
+      const kind = code.getAttribute("data-change");
+      if (kind) {
+        wrap.dataset.change = kind;
+        code.removeAttribute("data-change");
+      }
+    }
     pre.replaceWith(wrap);
     wrap.appendChild(pre);
 

@@ -1,6 +1,7 @@
 import DOMPurify from "dompurify";
 import { SCHEME, resolvePath } from "../shared/paths";
 import { md, enhanceCodeBlocks } from "./markdown";
+import type { ChangeKind } from "./split";
 import { buildFrontMatterCard, fmTitle, parseFrontMatter } from "./frontmatter";
 import { applyMarpBrowser, fixSlideAspectRatio, isMarpDocument, renderMarp } from "./marp";
 import type { MarpCoreBrowser } from "@marp-team/marp-core/browser";
@@ -53,6 +54,11 @@ export class DocumentViewer {
   private opts: ViewerOptions;
 
   private source = "";
+  /// 差分で変わった行 (元テキストの 0 始まり)。印を付けるためだけに持つ
+  private changedLines: Map<number, ChangeKind> | null = null;
+  /// 変更の線を引き直すのを 1 フレームにまとめるための印
+  private barsQueued = false;
+  private barObserver: ResizeObserver;
   private baseDir = "";
   private name = "";
   private scale = 1;
@@ -102,7 +108,12 @@ export class DocumentViewer {
     this.root.innerHTML = MARKUP;
     container.appendChild(this.root);
 
+    // 差分の線は本文の寸法に合わせて置くので、図の読み込みや幅の変化で
+    // 引き直す (変わったところが無ければ何もしない)
+    this.barObserver = new ResizeObserver(() => this.queueChangeBars());
+
     this.docEl = this.root.querySelector<HTMLElement>(".ink-doc")!;
+    this.barObserver.observe(this.docEl);
     this.slidesEl = this.root.querySelector<HTMLElement>(".ink-slides")!;
     // ライトボックスはスクロールコンテナの外 (root の兄弟) に置く。
     // 中に入れるとスクロール位置に追従してしまう。
@@ -128,10 +139,16 @@ export class DocumentViewer {
     return this.marpMode;
   }
 
-  async setSource(src: string, meta: { baseDir: string; name: string }) {
+  /// changedLines は差分で変わった行 (元テキストの 0 始まり) とその変わり方。
+  /// 渡すと、その行を含むブロックに印が付く。左右に並べるときにガワが渡す。
+  async setSource(
+    src: string,
+    meta: { baseDir: string; name: string; changedLines?: Map<number, ChangeKind> }
+  ) {
     this.source = src;
     this.baseDir = meta.baseDir;
     this.name = meta.name;
+    this.changedLines = meta.changedLines ?? null;
     this.dirty = false;
     await this.render();
   }
@@ -220,6 +237,7 @@ export class DocumentViewer {
   /// 破棄。タブを閉じるときに呼ぶ。root と ライトボックス の DOM を外し、
   /// document に残る CSS.highlights も片付ける。
   dispose() {
+    this.barObserver.disconnect();
     this.themeMedia.removeEventListener("change", this.onThemeChange);
     window.removeEventListener("resize", this.reportProgress);
     this.find_.dispose();
@@ -291,8 +309,16 @@ export class DocumentViewer {
         if (stale()) return;
       }
     } else {
+      // 変わった行は元テキストの行番号なので、front matter を剥がしたぶんずらす
+      const env = this.changedLines
+        ? {
+            changedLines: new Map(
+              Array.from(this.changedLines, ([n, kind]) => [n - fm.offset, kind] as const)
+            ),
+          }
+        : {};
       // md ファイル内の生 HTML 経由の XSS (IPC 到達) を防ぐためサニタイズする
-      this.docEl.innerHTML = DOMPurify.sanitize(md.render(fm.body));
+      this.docEl.innerHTML = DOMPurify.sanitize(md.render(fm.body, env));
       // Marp 側には当てない。Marp が出す CSS が自分の id を参照しているため。
       this.applyIdPrefix(this.docEl);
       // Marp は front matter を自分で消費するので、カードを足すのは本文モードだけ。
@@ -309,6 +335,7 @@ export class DocumentViewer {
     }
 
     if (stale()) return;
+    this.paintChangeBars();
     this.root.scrollTop = scrollTop;
     this.reportProgress();
     // 再描画でマッチ範囲が無効になるので張り直す (スクロールはしない)。
@@ -316,6 +343,66 @@ export class DocumentViewer {
     if (this.lastQuery) this.find_.run(this.lastQuery, false);
     this.root.classList.remove("is-refreshing");
     requestAnimationFrame(() => this.root.classList.add("is-refreshing"));
+  }
+
+  /// 変わったところの左に線を引く。
+  ///
+  /// markdown-it が印を付けたブロック (.ink-changed) の位置を測り、本文の
+  /// 左余白に線を置く。続いているブロックは 1 本にまとめるので、間の余白でも
+  /// 線が途切れない。図の読み込みや幅の変化で位置が動くため、docEl の寸法が
+  /// 変わるたびに引き直す。
+  private paintChangeBars() {
+    for (const old of Array.from(this.docEl.querySelectorAll(".ink-change-bar"))) {
+      old.remove();
+    }
+    const blocks = Array.from(this.docEl.querySelectorAll<HTMLElement>(".ink-changed"));
+    if (!blocks.length) return;
+
+    const groups: { top: number; bottom: number; kind: string; joins: boolean }[] = [];
+    let prev: Element | null = null;
+    for (const el of blocks) {
+      const kind = el.dataset.change ?? "mod";
+      const top = el.offsetTop;
+      const bottom = top + el.offsetHeight;
+      const last = groups[groups.length - 1];
+      const adjacent = !!last && el.previousElementSibling === prev;
+      // 隣り合っていて種類も同じなら 1 本につなげる (間の余白ごと埋める)
+      if (adjacent && last.kind === kind) {
+        last.bottom = bottom;
+      } else {
+        groups.push({ top, bottom, kind, joins: adjacent });
+      }
+      prev = el;
+    }
+
+    // 隣り合っているのに種類が違うところ (変更のすぐ下が追加、など) は、
+    // 色を分ける以上 1 本にはできない。境目で継いで、線が途切れないようにする。
+    for (let i = 1; i < groups.length; i++) {
+      if (!groups[i].joins) continue;
+      const mid = Math.round((groups[i - 1].bottom + groups[i].top) / 2);
+      groups[i - 1].bottom = mid;
+      groups[i].top = mid;
+    }
+
+    for (const g of groups) {
+      const bar = document.createElement("div");
+      bar.className = "ink-change-bar";
+      bar.dataset.change = g.kind;
+      bar.setAttribute("aria-hidden", "true");
+      bar.style.top = `${g.top}px`;
+      bar.style.height = `${Math.max(0, g.bottom - g.top)}px`;
+      this.docEl.appendChild(bar);
+    }
+  }
+
+  /// 寸法が変わったら線を引き直す。連続して呼ばれるので 1 フレームにまとめる。
+  private queueChangeBars() {
+    if (this.barsQueued) return;
+    this.barsQueued = true;
+    requestAnimationFrame(() => {
+      this.barsQueued = false;
+      this.paintChangeBars();
+    });
   }
 
   private async drawMermaid(blocks: HTMLElement[], stale: () => boolean) {

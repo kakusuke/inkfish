@@ -1,7 +1,7 @@
 import { basename, dirname } from "../shared/paths";
 import { DocumentViewer, type LinkTarget } from "../viewer/viewer";
 import { readMdFile } from "../chrome/files";
-import { loadSide, makeSides } from "../viewer/split";
+import { loadPair, makeSides } from "../viewer/split";
 import { splitDiff } from "../shared/rev";
 import type { FindState } from "../viewer/find";
 
@@ -109,17 +109,12 @@ export class DocTab {
   /// 無い側は空のまま印を出すだけにして、タブ自体は開いたままにする。
   async load() {
     if (this.pair && this.beforeViewer && this.beforeHost && this.afterHost) {
-      const [after, before] = await Promise.all([
-        loadSide(this.viewer, this.pair.after, this.afterHost, "変更後にはありません", this.name),
-        loadSide(
-          this.beforeViewer,
-          this.pair.before,
-          this.beforeHost,
-          "変更前にはありません",
-          this.name
-        ),
-      ]);
-      if (!after && !before) throw new Error("どちらの版にもありません");
+      const got = await loadPair(
+        { viewer: this.beforeViewer, id: this.pair.before, host: this.beforeHost },
+        { viewer: this.viewer, id: this.pair.after, host: this.afterHost },
+        this.name
+      );
+      if (!got.before && !got.after) throw new Error("どちらの版にもありません");
       return;
     }
 

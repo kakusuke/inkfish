@@ -1032,6 +1032,15 @@ fn cli_targets() -> (Vec<PathBuf>, Vec<PathBuf>) {
                 continue;
             }
         }
+        // 実体の無い ID (起点版・差分) はそのまま渡す。ファイルではないので
+        // 正規化できないが、ウィンドウはこれを開ける
+        if is_virtual_id(&arg) {
+            let p = PathBuf::from(&arg);
+            if !files.contains(&p) {
+                files.push(p);
+            }
+            continue;
+        }
         let Ok(p) = canonicalize(&arg) else { continue };
         if p.is_dir() {
             if !dirs.contains(&p) {

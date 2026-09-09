@@ -33,9 +33,12 @@
    行長だけ読みやすい上限 (1240px) でキャップする。
    ============================================================ */
 .markdown-body {
+  /* 左右の余白は差分の線の位置決めにも使うので変数にしておく */
+  --ink-pad-x: clamp(28px, 5.5vw, 88px);
+  position: relative;
   width: min(100% - clamp(28px, 5vw, 80px), 1240px);
   margin: 26px auto 96px;
-  padding: clamp(32px, 4.5vw, 64px) clamp(28px, 5.5vw, 88px) clamp(48px, 6vw, 88px);
+  padding: clamp(32px, 4.5vw, 64px) var(--ink-pad-x) clamp(48px, 6vw, 88px);
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 14px;
@@ -46,6 +49,31 @@
 
 .markdown-body > *:first-child {
   margin-top: 0;
+}
+
+/* --- 差分で変わったところの目印 (左右に並べたときだけ出る) ---
+   ブロックごとに疑似要素で描くと、間の余白に線を引けず、ブロックの
+   font-size や padding で長さも変わって不揃いになる。位置を測って本文の
+   左余白に置き、続いているものは 1 本にまとめる (viewer.ts の paintChangeBars)。
+   レンダリング結果そのものには手を触れない。 */
+.ink-change-bar {
+  position: absolute;
+  /* 本文カードの左の枠に重ねる。本文の中に引いてしまうと、引用の縁飾りの
+     ような「内側の縦線」と見分けが付かなくなるため、枠そのものに沿わせる */
+  left: -1px;
+  width: 4px;
+  border-radius: 4px 0 0 4px;
+  background: var(--git-modified);
+  pointer-events: none;
+}
+
+/* 追加は終点側だけ、削除は起点側だけに出る */
+.ink-change-bar[data-change="add"] {
+  background: var(--git-added);
+}
+
+.ink-change-bar[data-change="del"] {
+  background: var(--git-deleted);
 }
 
 /* --- front matter のメタ情報カード(本文冒頭) --- */
@@ -262,7 +290,7 @@
   margin-bottom: 0;
 }
 
-.markdown-body .code-block[data-lang]::before {
+.markdown-body .code-block[data-lang]::after {
   content: attr(data-lang);
   position: absolute;
   top: 9px;
@@ -278,7 +306,7 @@
   transition: opacity 0.15s;
 }
 
-.markdown-body .code-block:hover[data-lang]::before {
+.markdown-body .code-block:hover[data-lang]::after {
   opacity: 0;
 }
 

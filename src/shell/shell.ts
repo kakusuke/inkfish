@@ -28,7 +28,7 @@ import {
   watchFiles,
 } from "../chrome/files";
 import { isRev, splitDiff } from "../shared/rev";
-import { loadSide, makeSides } from "../viewer/split";
+import { loadPair, makeSides } from "../viewer/split";
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
 /// 同じ data-act を持つ要素が複数ある (ツールバーと空の状態の「フォルダを開く」)
@@ -330,17 +330,12 @@ export class AppShell {
     if (!this.beforeViewer || !this.beforeHost || !this.afterHost) return;
     this.currentName = basename(path) || path;
 
-    const [after, before] = await Promise.all([
-      loadSide(this.viewer, pair.after, this.afterHost, "変更後にはありません", this.currentName),
-      loadSide(
-        this.beforeViewer,
-        pair.before,
-        this.beforeHost,
-        "変更前にはありません",
-        this.currentName
-      ),
-    ]);
-    if (!after && !before) {
+    const got = await loadPair(
+      { viewer: this.beforeViewer, id: pair.before, host: this.beforeHost },
+      { viewer: this.viewer, id: pair.after, host: this.afterHost },
+      this.currentName
+    );
+    if (!got.before && !got.after) {
       this.toast.show("どちらの版にもありません");
       return;
     }

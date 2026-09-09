@@ -605,6 +605,91 @@ pub(crate) fn read_target(id: &str) -> Result<Vec<u8>, String> {
     }
 }
 
+/// 行の中の画像参照 (`![alt](path)`) のパスを拾う。
+///
+/// このためだけに正規表現の依存を足したくないので手で読む。タイトル付き
+/// (`![](p "t")`) は空白で切り、外部 URL は対象から外す。
+fn image_refs(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b'!' && bytes[i + 1] == b'[' {
+            if let Some(mid) = line[i..].find("](") {
+                let start = i + mid + 2;
+                if let Some(end) = line[start..].find(')') {
+                    let inside = &line[start..start + end];
+                    let path = inside.split_whitespace().next().unwrap_or("").trim();
+                    if !path.is_empty() && !path.contains("://") && !path.starts_with('#') {
+                        out.push(percent_decode(path));
+                    }
+                    i = start + end;
+                }
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+/// 文書の ID を起点に、相対パスを同じ形の ID へ解決する。
+/// rev:/<sha>/… でも実ファイルのパスでも、スラッシュ区切りなので同じ扱いでよい。
+fn resolve_sibling(doc: &str, rel: &str) -> String {
+    if rel.starts_with('/') {
+        return rel.to_string();
+    }
+    let base = doc.rfind('/').map(|i| &doc[..i]).unwrap_or("");
+    let mut parts: Vec<&str> = base.split('/').collect();
+    for seg in rel.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            s => parts.push(s),
+        }
+    }
+    parts.join("/")
+}
+
+/// 文書が指している画像で、中身が差し替わったものを変更として拾う。
+///
+/// パスが同じなら行差分には出ないが、指している絵が別物になっていれば
+/// 読み手にとっては変わったところなので、その行に印を出したい。
+fn image_hunks(a: &str, b: &str, before: &str, after: &str) -> Vec<Hunk> {
+    let refs = |text: &str| -> Vec<(String, u32)> {
+        text.lines()
+            .enumerate()
+            .flat_map(|(i, l)| image_refs(l).into_iter().map(move |r| (r, i as u32)))
+            .collect()
+    };
+    let (a_refs, b_refs) = (refs(a), refs(b));
+
+    let mut out = Vec::new();
+    for (rel, bi) in &b_refs {
+        // 同じパスを指している行が起点側にもあるものだけを見る
+        // (パスごと変わっていれば、それは行差分の方に出る)
+        let Some((_, ai)) = a_refs.iter().find(|(r, _)| r == rel) else {
+            continue;
+        };
+        let (x, y) = (resolve_sibling(before, rel), resolve_sibling(after, rel));
+        // 読めないものは判断しない (外部の絵や、消えた絵は行差分の側に出る)
+        let differs = match (read_target(&x), read_target(&y)) {
+            (Ok(p), Ok(q)) => p != q,
+            _ => false,
+        };
+        if differs {
+            out.push(Hunk {
+                before_start: *ai,
+                before_end: *ai + 1,
+                after_start: *bi,
+                after_end: *bi + 1,
+            });
+        }
+    }
+    out
+}
+
 /// 2 つの版の行差分。左右に並べたときの目印と、変更箇所への移動に使う。
 ///
 /// 差分そのものは gix (imara-diff) が計算する。フロントは行番号を
@@ -621,7 +706,7 @@ pub async fn git_hunks(before: String, after: String) -> Result<Vec<Hunk>, Strin
         use gix::diff::blob::{Algorithm, Diff, InternedInput};
         let input = InternedInput::new(a.as_str(), b.as_str());
         let diff = Diff::compute(Algorithm::Histogram, &input);
-        Ok(diff
+        let mut hunks: Vec<Hunk> = diff
             .hunks()
             .map(|h| Hunk {
                 before_start: h.before.start,
@@ -629,7 +714,10 @@ pub async fn git_hunks(before: String, after: String) -> Result<Vec<Hunk>, Strin
                 after_start: h.after.start,
                 after_end: h.after.end,
             })
-            .collect())
+            .collect();
+        // 文章が同じでも、指している絵が差し替わっていれば変わったところ
+        hunks.extend(image_hunks(&a, &b, &before, &after));
+        Ok(hunks)
     })
     .await
     .map_err(|e| e.to_string())?
