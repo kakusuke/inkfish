@@ -18,11 +18,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
+      # 道具の版は mise.toml が持つ (node / rust)。手元と CI で同じものを使う。
+      - name: Setup tools
+        uses: jdx/mise-action@v2
 
       # generate_context! はコンパイル時に frontendDist (../dist) を埋め込むため、
       # cargo check の前にフロントエンドをビルドして dist を用意する。
@@ -30,9 +28,6 @@ jobs:
         run: |
           npm ci
           npm run build
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2

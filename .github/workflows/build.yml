@@ -23,14 +23,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
+      # 道具の版は mise.toml が持つ (node / rust)。手元と CI で同じものを使う。
+      - uses: jdx/mise-action@v2
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      # universal (aarch64 + x86_64) を作るのに要る。mise が入れる rust は
+      # rustup を土台にしているので、target はこちらで足す。
+      - name: Add macOS targets
+        if: matrix.platform == 'macos-latest'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
       - uses: swatinem/rust-cache@v2
         with:
