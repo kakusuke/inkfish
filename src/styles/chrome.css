@@ -561,6 +561,9 @@ body.is-exporting .ink-linkstatus {
      ツールバーに潜り込んでいく。タブの中では枠が逃げを持っているので 0。 */
   margin-top: var(--ink-chrome-top, 0px);
   height: calc(100% - var(--ink-chrome-top, 0px));
+  /* 中身の高さは JS が決める。伸び縮みのたびに位置を補正されると、開いた
+     直後に先頭ではないところが出てしまう */
+  overflow-anchor: none;
 }
 
 /* 高さを持つだけの層。長い側に合わせて JS が伸ばす */

@@ -96,7 +96,8 @@ md.core.ruler.push("ink-changed", (state) => {
     return t;
   };
 
-  // ブロックの境目に置くもの。行を作ってしまわないよう、CSS で流れから外す
+  // 行の中に置けないところ (コードブロックの手前、文書の終わり) 用。
+  // 行を作ってしまわないよう、CSS で流れから外す
   const blockMark = (at: At, line: number) => {
     const t = new state.Token("html_block", "", 0);
     t.content = `${span(at, line, "gap", true)}\n`;
@@ -126,15 +127,16 @@ md.core.ruler.push("ink-changed", (state) => {
     // 足された行でもブロックの頭を指してしまう)。
     const inserts: string[] = [];
 
-    // 段落やリストは中の行に置けるので、頭より前のものだけをここで片づける。
-    // コードブロックのように中へ置けないものは、範囲に入るものもここで出す。
-    if (token.level === 0 && token.map) {
-      const opaque = OPAQUE.has(token.type);
+    // 中に目印を置けるブロック (段落・リスト・表・引用) は、行の頭に挿す
+    // inline の目印に任せる。ブロックの手前に独立して置くと、流れから外して
+    // ある関係で位置が思ったところに出ない。ここで片づけるのは、中に置けない
+    // ブロックだけ。
+    if (token.level === 0 && token.map && OPAQUE.has(token.type)) {
       const code = isCode(token);
       const head = token.map[0] + (token.type === "fence" ? 1 : 0);
-      const upto = opaque ? token.map[1] : token.map[0] + 1;
-      while (pi < pending.length && pending[pi][0] < upto) {
+      while (pi < pending.length && pending[pi][0] < token.map[1]) {
         const [line, at] = pending[pi];
+        // コードブロックの中は何行目かで指せる。それ以外は手前に置くしかない
         if (code && line > token.map[0]) {
           inserts.push(`${at.hunk}:${Math.max(0, line - head)}:${at.kind}`);
         } else {

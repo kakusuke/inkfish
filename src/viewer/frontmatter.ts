@@ -90,25 +90,80 @@ export const fmTitle = (data: Record<string, unknown> | null): string => {
 
 // front matter を本文冒頭のメタ情報カードにする。textContent だけで組むので
 // サニタイズ済みの本文へそのまま prepend してよい。
-export function buildFrontMatterCard(data: Record<string, unknown>): HTMLElement | null {
-  const leads: string[] = [];
-  const metas: string[] = [];
-  const tags: string[] = [];
+/// front matter のどのキーが変わったか。差分でカードに印を付けるのに使う。
+export type FmMark = { kind: string; hunk: number };
+export type FmMarks = {
+  /// front matter ごと足された / 消えた。カードまるごとが対象
+  whole?: FmMark;
+  byKey: Map<string, FmMark>;
+};
+
+/// 変わった行を front matter のキーに写す。
+///
+/// YAML は本文から剥がしてカードに組み直すので、本文に挿す目印では届かない。
+/// 行の頭のキー名を拾えば「どの項目が変わったか」までは出せる (複数行の値は
+/// 直前のキーに属する)。区切りも含めて全部が変わっていれば、front matter が
+/// まるごと足された / 消えたということなので、カードごと 1 つの塊にする。
+export function frontMatterMarks(
+  src: string,
+  offset: number,
+  changed: Map<number, FmMark>
+): FmMarks {
+  const byKey = new Map<string, FmMark>();
+  if (offset <= 0) return { byKey };
+
+  const lines = src.split("\n").slice(0, offset);
+  let key = "";
+  let hits = 0;
+  lines.forEach((line, i) => {
+    if (/^\uFEFF?(---|\.\.\.)[ \t]*\r?$|^\uFEFF?(---|\.\.\.)[ \t]*$/.test(line)) key = "";
+    else {
+      const m = /^([A-Za-z0-9_.\-]+)[ \t]*:/.exec(line);
+      if (m) key = m[1].toLowerCase();
+    }
+    const at = changed.get(i);
+    if (!at) return;
+    hits++;
+    if (!key) return;
+    const cur = byKey.get(key);
+    byKey.set(key, cur && cur.kind !== at.kind ? { ...cur, kind: "mod" } : at);
+  });
+
+  const whole = hits === lines.length ? (changed.get(0) ?? [...byKey.values()][0]) : undefined;
+  return { whole, byKey };
+}
+
+export function buildFrontMatterCard(
+  data: Record<string, unknown>,
+  marks?: FmMarks
+): HTMLElement | null {
+  const leads: [string, string][] = [];
+  const metas: [string, string][] = [];
+  const tags: [string, string][] = [];
   const rest: [string, string][] = [];
 
   for (const [key, value] of Object.entries(data)) {
     const k = key.toLowerCase();
     // marp / title は他の場所で使い終えているのでカードには出さない
     if (k === "title" || k === "marp") continue;
-    if (FM_LEAD_KEYS.has(k)) leads.push(fmText(value));
-    else if (FM_META_KEYS.has(k)) metas.push(fmText(value));
-    else if (FM_TAG_KEYS.has(k)) tags.push(...fmList(value));
+    if (FM_LEAD_KEYS.has(k)) leads.push([k, fmText(value)]);
+    else if (FM_META_KEYS.has(k)) metas.push([k, fmText(value)]);
+    else if (FM_TAG_KEYS.has(k)) for (const t of fmList(value)) tags.push([k, t]);
     // 空値も「キーはある」ことが分かるように残す
     else rest.push([key, fmText(value) || "—"]);
   }
 
   const card = document.createElement("header");
   card.className = "front-matter";
+  // 差分の印。項目ごとに付けると「日付だけ変わった」まで見える
+  const mark = <T extends HTMLElement>(el: T, key: string): T => {
+    const at = marks?.byKey.get(key.toLowerCase());
+    if (at) {
+      el.dataset.at = String(at.hunk);
+      el.dataset.kind = at.kind;
+    }
+    return el;
+  };
   const add = (tag: string, cls: string, text: string) => {
     const el = document.createElement(tag);
     el.className = cls;
@@ -118,25 +173,25 @@ export function buildFrontMatterCard(data: Record<string, unknown>): HTMLElement
   };
 
   const title = fmTitle(data);
-  if (title) add("h1", "fm-title", title);
-  for (const lead of leads.filter(Boolean)) add("p", "fm-lead", lead);
+  if (title) mark(add("h1", "fm-title", title), "title");
+  for (const [key, lead] of leads.filter(([, t]) => t)) mark(add("p", "fm-lead", lead), key);
 
-  const shown = metas.filter(Boolean);
+  const shown = metas.filter(([, t]) => t);
   if (shown.length) {
     const line = add("p", "fm-meta", "");
-    for (const text of shown) {
+    for (const [key, text] of shown) {
       const span = document.createElement("span");
       span.textContent = text;
-      line.appendChild(span);
+      line.appendChild(mark(span, key));
     }
   }
 
   if (tags.length) {
     const list = add("ul", "fm-tags", "");
-    for (const tag of tags) {
+    for (const [key, tag] of tags) {
       const li = document.createElement("li");
       li.textContent = `#${tag}`;
-      list.appendChild(li);
+      list.appendChild(mark(li, key));
     }
   }
 
@@ -148,9 +203,19 @@ export function buildFrontMatterCard(data: Record<string, unknown>): HTMLElement
       dt.textContent = key;
       const dd = document.createElement("dd");
       dd.textContent = value;
-      dl.append(dt, dd);
+      dl.append(mark(dt, key), mark(dd, key));
     }
   }
 
-  return card.childElementCount ? card : null;
+  if (!card.childElementCount) return null;
+  // front matter ごと足された / 消えたときは、項目ではなくカードを 1 つの塊に
+  if (marks?.whole) {
+    for (const el of Array.from(card.querySelectorAll<HTMLElement>("[data-at]"))) {
+      delete el.dataset.at;
+      delete el.dataset.kind;
+    }
+    card.dataset.at = String(marks.whole.hunk);
+    card.dataset.kind = marks.whole.kind;
+  }
+  return card;
 }
