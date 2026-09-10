@@ -348,6 +348,17 @@ export function keepSynced(
   before: DocumentViewer,
   after: DocumentViewer
 ): DiffSync {
+  // 短いほうに足す逃げ。本文の外 (紙の下) に置くので、紙の丈は変わらない
+  const spacer = (viewer: DocumentViewer) => {
+    const el = document.createElement("div");
+    el.className = "ink-diff-pad";
+    el.setAttribute("aria-hidden", "true");
+    viewer.scrollEl.appendChild(el);
+    return el;
+  };
+  const bPad = spacer(before);
+  const aPad = spacer(after);
+
   // 外枠 / 起点側 / 終点側 それぞれの対応点
   let tPts: number[] = [0, 0];
   let bPts: number[] = [0, 0];
@@ -387,16 +398,38 @@ export function keepSynced(
   const rebuild = () => {
     const h = scroller.clientHeight;
     if (h <= 0) return;
+    // 外枠の高さはこのあと組み直す。中身が伸び縮みするとブラウザが見た目の
+    // 位置を保とうとして勝手にスクロールするので、元の位置に戻す
+    // (開いた直後に先頭ではないところが出てしまう)。
+    const keep = scroller.scrollTop;
     viewport.style.height = `${h}px`;
 
     // 対応表の末尾は「内容の総高さ」にする。スクロールできる量 (総高さ − 画面)
     // で止めると、基準点を画面の中ほどに置いたぶんだけ手前で頭打ちになる。
     const bEnd = before.scrollEl.scrollHeight;
     const aEnd = after.scrollEl.scrollHeight;
-    bMax = Math.max(0, bEnd - h);
-    aMax = Math.max(0, aEnd - h);
 
     bands = bandsOf(before, after);
+
+    // 逃げ (bPad / aPad) は自分で足したものなので、中身の丈から外して測る
+    const bBody = bEnd - bPad.offsetHeight;
+    const aBody = aEnd - aPad.offsetHeight;
+
+    // 末尾に「片側にしか無い差分」が続いているところは、下を左右で揃えない。
+    //
+    // 揃えてしまうと、短いほうは中身の終わりで行き止まりになり、最後まで
+    // 送ったとき左右の下端がぴたりと合う。足された (消された) ぶんがどちらの
+    // 文書のものか見えなくなるので、そこは揃えたくない。短いほうに逃げを
+    // 持たせておけば、最後は片方が中身が尽きて空白、もう片方は続きの中身になる。
+    //
+    // 続いているぶんをまとめて見るのが肝。いちばん後ろの 1 つだけを見ると、
+    // その手前で止まっていたぶんが数に入らず、逃げが足りない。
+    let openFrom = bands.length;
+    while (openFrom > 0) {
+      const b = bands[openFrom - 1];
+      if (b.bTop !== b.bBottom && b.aTop !== b.aBottom) break;
+      openFrom--;
+    }
 
     // 帯の端は本文の縁 — 差分の線が出ているところ。線は縁に 1px 重ねて
     // 幅 4px なので、その外側から出す
@@ -412,7 +445,7 @@ export function keepSynced(
     const push = (bv: number, av: number) => {
       // 補間できるよう、どちらも前の点より後ろに進むものだけを採る
       if (bv < bPts[bPts.length - 1] || av < aPts[aPts.length - 1]) return;
-      if (bv > bEnd || av > aEnd) return;
+      if (bv > bBody || av > aBody) return;
       // 同じ位置が続いても意味が無い
       if (bv === bPts[bPts.length - 1] && av === aPts[aPts.length - 1]) return;
       bPts.push(bv);
@@ -421,19 +454,39 @@ export function keepSynced(
 
     // 対応点は帯の頭と尻。片側が点の帯 (まるごとの追加・削除) では、その側の
     // 頭と尻が同じ値になるので、そこで片方が止まって相手が流れる。
-    const points = bands.flatMap((b) => [
-      { b: b.bTop, a: b.aTop },
-      { b: b.bBottom, a: b.aBottom },
-    ]);
+    // 末尾に続く片側だけの帯は尻を積まない — そこから下は逃げで丈を合わせるので、
+    // 左右が同じだけ進み、短いほうは中身が尽きて空白になる。
+    const points = bands.flatMap((b, i) =>
+      i >= openFrom
+        ? [{ b: b.bTop, a: b.aTop }]
+        : [
+            { b: b.bTop, a: b.aTop },
+            { b: b.bBottom, a: b.aBottom },
+          ]
+    );
 
     // 左右それぞれで前へ進む順に並べてから積む (両側を別々に回しているので、
     // そのままでは順序が入れ替わり、補間が壊れる)
     points.sort((x, y) => x.b - y.b || x.a - y.a);
     for (const p of points) push(p.b, p.a);
-    push(bEnd, aEnd);
-    if (bPts.length < 2) {
-      bPts = [0, bEnd];
-      aPts = [0, aEnd];
+
+    // 最後の対応点から下に残っている量を、左右で揃える。短いほうに足した
+    // 逃げは本文の外に置くので、紙の丈は中身なりのまま。
+    const bLast = bPts[bPts.length - 1];
+    const aLast = aPts[aPts.length - 1];
+    const slack = aBody - aLast - (bBody - bLast);
+    bPad.style.height = `${Math.max(0, slack)}px`;
+    aPad.style.height = `${Math.max(0, -slack)}px`;
+    const bTotal = bBody + Math.max(0, slack);
+    const aTotal = aBody + Math.max(0, -slack);
+    bMax = Math.max(0, bTotal - h);
+    aMax = Math.max(0, aTotal - h);
+
+    bPts.push(bTotal);
+    aPts.push(aTotal);
+    if (bPts.length < 3) {
+      bPts = [0, bTotal];
+      aPts = [0, aTotal];
     }
 
     // 外枠は「区間ごとに長い方」の積み上げ。こうするとどちらの中身も
@@ -444,6 +497,8 @@ export function keepSynced(
       tPts.push(tPts[i - 1] + span);
     }
     track.style.height = `${tPts[tPts.length - 1]}px`;
+
+    if (scroller.scrollTop !== keep) scroller.scrollTop = keep;
     apply();
   };
 
@@ -486,6 +541,8 @@ export function keepSynced(
       scroller.removeEventListener("scroll", onScroll);
       before.contentEl.style.transform = "";
       after.contentEl.style.transform = "";
+      bPad.remove();
+      aPad.remove();
     },
   };
 }

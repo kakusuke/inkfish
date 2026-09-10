@@ -2,7 +2,12 @@ import DOMPurify from "dompurify";
 import { SCHEME, resolvePath } from "../shared/paths";
 import { md, enhanceCodeBlocks } from "./markdown";
 import type { ChangeAt } from "./split";
-import { buildFrontMatterCard, fmTitle, parseFrontMatter } from "./frontmatter";
+import {
+  buildFrontMatterCard,
+  fmTitle,
+  frontMatterMarks,
+  parseFrontMatter,
+} from "./frontmatter";
 import { applyMarpBrowser, fixSlideAspectRatio, isMarpDocument, renderMarp } from "./marp";
 import type { MarpCoreBrowser } from "@marp-team/marp-core/browser";
 import {
@@ -56,7 +61,12 @@ export type ChangeSpan = {
 };
 
 /// 線 1 本ぶんのまとまり。近い差分をつないだもの。
-export type ChangeRun = { top: number; bottom: number; kind: string; hunks: number[] };
+export type ChangeRun = {
+  top: number;
+  bottom: number;
+  kind: string;
+  hunks: number[];
+};
 
 /// 要素が root の中のどこにあるか。transform の影響を受けないレイアウト上の値。
 export function offsetTopIn(el: HTMLElement, root: HTMLElement): number {
@@ -334,7 +344,9 @@ export class DocumentViewer {
     this.lastMermaidKey = null;
     const fm = await parseFrontMatter(this.source);
     if (stale()) return;
-    this.marpMode = isMarpDocument(fm, this.source);
+    // 差分ではスライドに組み替えず、ふつうの markdown として描く。Marp は
+    // 自前のレンダラを通るので行の目印が入らず、どこが変わったのか示せない。
+    this.marpMode = this.changedLines === null && isMarpDocument(fm, this.source);
     this.opts.onCaption?.({ title: fmTitle(fm.data), name: this.name });
     if (fm.broken) this.notice("front matter を YAML として読めませんでした");
 
@@ -377,7 +389,12 @@ export class DocumentViewer {
       this.applyIdPrefix(this.docEl);
       // Marp は front matter を自分で消費するので、カードを足すのは本文モードだけ。
       // 自前で組んだ要素なのでサニタイズ後に入れて問題ない。
-      const card = fm.data && buildFrontMatterCard(fm.data);
+      // YAML は本文から剥がしてカードに組み直すので、本文に挿す目印では届かない。
+      // 変わった行をキーに写して、項目ごとに印を付ける。
+      const fmMarks = this.changedLines
+        ? frontMatterMarks(this.source, fm.offset, this.changedLines)
+        : undefined;
+      const card = fm.data && buildFrontMatterCard(fm.data, fmMarks);
       if (card) this.docEl.prepend(card);
       this.rewriteLocalImages(this.docEl);
       enhanceCodeBlocks(this.docEl, (m) => this.notice(m));
@@ -390,7 +407,9 @@ export class DocumentViewer {
 
     if (stale()) return;
     this.paintChangeBars();
-    this.root.scrollTop = scrollTop;
+    // 差分では中身の位置を transform で決める (split.ts)。器のほうがスクロール
+    // していると二重にずれるので、こちらは頭に固定しておく。
+    this.root.scrollTop = this.changedLines ? 0 : scrollTop;
     this.reportProgress();
     // 再描画でマッチ範囲が無効になるので張り直す (スクロールはしない)。
     // 検索が閉じているときは lastQuery が空なので何もしない。
@@ -417,6 +436,7 @@ export class DocumentViewer {
       cur.bottom = Math.max(cur.bottom, bottom);
       if (cur.kind !== kind) cur.kind = "mod";
     };
+
 
     const hunksOf = (el: HTMLElement) =>
       (el.dataset.at ?? "")
