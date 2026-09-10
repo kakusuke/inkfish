@@ -8,6 +8,7 @@ import { DocumentViewer, type LinkTarget } from "../viewer/viewer";
 import { Toolbar } from "./toolbar";
 import { Toast, wireLinkStatus } from "../chrome/toast";
 import { PopoverGroup } from "../chrome/popover";
+import { ContextMenu, copyItems } from "../chrome/ctxmenu";
 import { FindBar } from "../chrome/findbar";
 import { fillSettings, openInEditor, wireSettings } from "../chrome/settings";
 import { pushRecent, renderRecents } from "./recents";
@@ -49,6 +50,8 @@ export class AppShell {
   private toolbar: Toolbar;
   private toast: Toast;
   private popovers = new PopoverGroup();
+  /// 右クリックのメニュー。ウィンドウに 1 つ
+  private menu = new ContextMenu();
   private findBar: FindBar;
   private emptyEl: HTMLElement;
 
@@ -128,6 +131,18 @@ export class AppShell {
     });
     this.windowMenu.close = () => this.popovers.close(windowPopover);
     this.toolbar.capsule.addEventListener("click", () => this.popovers.toggle(windowPopover));
+    // カプセルが指しているのは今開いている ID (ファイルのパス・起点版・差分)。
+    // 右クリックでそれをコピーできる。
+    this.toolbar.capsule.addEventListener("contextmenu", (e) => {
+      if (!this.currentPath) return;
+      e.preventDefault();
+      this.popovers.closeAll();
+      this.menu.open(
+        copyItems(this.currentPath, (m) => this.toast.show(m)),
+        e.clientX,
+        e.clientY
+      );
+    });
     // ↑↓ / Enter は一覧が開いているときだけ専有する
     window.addEventListener("keydown", (e) => {
       if (!this.popovers.isOpen(windowPopover)) return;

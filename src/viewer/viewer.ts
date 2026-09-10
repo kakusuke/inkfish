@@ -60,14 +60,6 @@ export type ChangeSpan = {
   point: boolean;
 };
 
-/// 線 1 本ぶんのまとまり。近い差分をつないだもの。
-export type ChangeRun = {
-  top: number;
-  bottom: number;
-  kind: string;
-  hunks: number[];
-};
-
 /// 要素が root の中のどこにあるか。transform の影響を受けないレイアウト上の値。
 export function offsetTopIn(el: HTMLElement, root: HTMLElement): number {
   let y = 0;
@@ -473,27 +465,6 @@ export class DocumentViewer {
     return [...out.values()].sort((a, b) => a.top - b.top || a.hunk - b.hunk);
   }
 
-  /// 線 1 本ぶんのまとまり。
-  ///
-  /// 差分そのものは細かく割れているが、読み手が見ているのは線のまとまりなので、
-  /// 左右を結ぶ帯もスクロールの区切りもこの単位にそろえる。近くても種類 (追加・
-  /// 削除・変更) が違えば色を分ける以上つなげない。
-  changeRuns(): ChangeRun[] {
-    const join = this.joinGap();
-    const runs: ChangeRun[] = [];
-    for (const s of this.changeSpans()) {
-      if (s.point) continue;
-      const last = runs[runs.length - 1];
-      if (last && last.kind === s.kind && s.top - last.bottom <= join) {
-        last.bottom = Math.max(last.bottom, s.bottom);
-        last.hunks.push(s.hunk);
-        continue;
-      }
-      runs.push({ top: s.top, bottom: s.bottom, kind: s.kind, hunks: [s.hunk] });
-    }
-    return runs;
-  }
-
   /// 相手側だけが増えた位置。その側には線が出ないので、帯の頂点に使う。
   changePoints(): Map<number, number> {
     const out = new Map<number, number>();
@@ -501,27 +472,25 @@ export class DocumentViewer {
     return out;
   }
 
-  /// つなぐ間合い。行の高さを基準にする (段落どうしの余白ぶん)
-  private joinGap(): number {
-    return (parseFloat(getComputedStyle(this.docEl).lineHeight) || 24) * 1.6;
-  }
-
   /// 変わったところの縁に線を引く。
   ///
-  /// まとまりの出し方は changeRuns に任せる。左右を結ぶ帯もスクロールの
-  /// 区切りも同じものを見るので、線とずれることがない。図の読み込みや幅の
-  /// 変化で位置が動くため、docEl の寸法が変わるたびに引き直す。
+  /// 引くのはハンク 1 つにつき 1 本 (changeSpans がそのまま線になる)。近い
+  /// ものをつなぐと、つなぐかどうかの判断が要る — 画面の隙間で決めると
+  /// 折り返しが幅で変わるぶん左右で答えが食い違い、行で決めると画面の
+  /// 見た目と合わない。つながなければ迷いが消えて、左右も必ず 1 対 1 になる。
+  /// 図の読み込みや幅の変化で位置が動くため、docEl の寸法が変わるたびに引き直す。
   private paintChangeBars() {
     for (const old of Array.from(this.docEl.querySelectorAll(".ink-change-bar"))) {
       old.remove();
     }
-    for (const run of this.changeRuns()) {
+    for (const s of this.changeSpans()) {
+      if (s.point) continue;
       const bar = document.createElement("div");
       bar.className = "ink-change-bar";
-      bar.dataset.change = run.kind;
+      bar.dataset.change = s.kind;
       bar.setAttribute("aria-hidden", "true");
-      bar.style.top = `${run.top}px`;
-      bar.style.height = `${Math.max(0, run.bottom - run.top)}px`;
+      bar.style.top = `${s.top}px`;
+      bar.style.height = `${Math.max(0, s.bottom - s.top)}px`;
       this.docEl.appendChild(bar);
     }
   }

@@ -5,7 +5,7 @@
 // ガワでも「その ID を開いているだけ」になり、置き場所が違うだけで済む。
 
 import { invoke } from "@tauri-apps/api/core";
-import type { ChangeRun, DocumentViewer } from "./viewer";
+import type { ChangeSpan, DocumentViewer } from "./viewer";
 import { dirname } from "../shared/paths";
 import { readMdFile } from "../chrome/files";
 
@@ -276,55 +276,45 @@ function drawRibbon(
   ribbon.innerHTML = paths.join("");
 }
 
-/// 左右のまとまりを突き合わせて帯にする。
+/// 左右の線を突き合わせて帯にする。
 ///
-/// 突き合わせるのは線そのもの (changeRuns)。線と別に範囲を組み立てると、
-/// まとめ方の違いがそのまま帯のズレになって出る。
+/// 突き合わせるのは線そのもの (changeSpans)。線と別に範囲を組み立てると、
+/// 出し方の違いがそのまま帯のズレになって出る。
 ///
-/// まとめ方は左右で食い違うことがある — 片方では 1 本、もう片方では 2 本に
-/// 割れる。その場合は 1 本の線に 2 つの帯が刺さる形になり、それでよい。
-/// 相手に線が無いもの (まるごとの追加・削除) は、相手側の点を頂点にする。
+/// 線はハンク 1 つにつき 1 本なので、突き合わせもハンク番号で引くだけ。
+/// つないでいたときは「左で 1 本・右で 2 本」が起きて、どちらに合わせても
+/// 帯か線のどちらかが食い違った。相手に線が無いもの (まるごとの追加・削除)
+/// は、相手側の点を頂点にする。
 function bandsOf(before: DocumentViewer, after: DocumentViewer): Band[] {
-  const bRuns = before.changeRuns();
-  const aRuns = after.changeRuns();
+  const solid = (v: DocumentViewer) => v.changeSpans().filter((s) => !s.point);
+  const bSpans = solid(before);
+  const aSpans = solid(after);
   const bPoints = before.changePoints();
   const aPoints = after.changePoints();
 
-  const mate = (runs: ChangeRun[], hunks: number[]) =>
-    runs.find((r) => r.hunks.some((h) => hunks.includes(h)));
-  const pointOf = (points: Map<number, number>, hunks: number[]) => {
-    for (const h of hunks) {
-      const y = points.get(h);
-      if (y !== undefined) return y;
-    }
-    return null;
-  };
+  const band = (b: ChangeSpan | number, a: ChangeSpan | number, kind: string): Band => ({
+    bTop: typeof b === "number" ? b : b.top,
+    bBottom: typeof b === "number" ? b : b.bottom,
+    aTop: typeof a === "number" ? a : a.top,
+    aBottom: typeof a === "number" ? a : a.bottom,
+    kind,
+  });
 
   const bands: Band[] = [];
-  const paired = new Set<ChangeRun>();
-  for (const b of bRuns) {
-    const a = mate(aRuns, b.hunks);
+  for (const b of bSpans) {
+    const a = aSpans.find((s) => s.hunk === b.hunk);
     if (a) {
-      paired.add(a);
-      bands.push({ bTop: b.top, bBottom: b.bottom, aTop: a.top, aBottom: a.bottom, kind: b.kind });
+      bands.push(band(b, a, b.kind));
       continue;
     }
-    const y = pointOf(aPoints, b.hunks);
-    if (y !== null) {
-      bands.push({ bTop: b.top, bBottom: b.bottom, aTop: y, aBottom: y, kind: b.kind });
-    }
+    const y = aPoints.get(b.hunk);
+    if (y !== undefined) bands.push(band(b, y, b.kind));
   }
-  for (const a of aRuns) {
-    if (paired.has(a)) continue;
-    const b = mate(bRuns, a.hunks);
-    if (b) {
-      bands.push({ bTop: b.top, bBottom: b.bottom, aTop: a.top, aBottom: a.bottom, kind: a.kind });
-      continue;
-    }
-    const y = pointOf(bPoints, a.hunks);
-    if (y !== null) {
-      bands.push({ bTop: y, bBottom: y, aTop: a.top, aBottom: a.bottom, kind: a.kind });
-    }
+  for (const a of aSpans) {
+    // 上で組にしたものは済み
+    if (bSpans.some((s) => s.hunk === a.hunk)) continue;
+    const y = bPoints.get(a.hunk);
+    if (y !== undefined) bands.push(band(y, a, a.kind));
   }
 
   return bands.sort((x, y) => x.bTop - y.bTop || x.aTop - y.aTop);

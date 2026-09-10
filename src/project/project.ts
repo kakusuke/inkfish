@@ -6,6 +6,7 @@ import { openUrl, openPath as openExternal } from "@tauri-apps/plugin-opener";
 import type { LinkTarget } from "../viewer/viewer";
 import { Toast, wireLinkStatus } from "../chrome/toast";
 import { PopoverGroup } from "../chrome/popover";
+import { ContextMenu, copyItems } from "../chrome/ctxmenu";
 import { FindBar } from "../chrome/findbar";
 import { fillSettings, openInEditor, wireSettings } from "../chrome/settings";
 import { exportPdf } from "../chrome/pdf";
@@ -54,6 +55,9 @@ export class ProjectShell {
 
   private toast: Toast;
   private popovers = new PopoverGroup();
+  /// 右クリックのメニュー。ウィンドウに 1 つで、ヘッダー・タブ・ツリーの行・
+  /// 変更の行が共有する
+  private menu = new ContextMenu();
   private findBar: FindBar;
   private tree: TreePane;
   private git: GitPane;
@@ -75,7 +79,7 @@ export class ProjectShell {
     this.progressEl = $(".ink-progress");
     this.capsule = $<HTMLButtonElement>(".ink-capsule");
 
-    this.tree = new TreePane($(".ink-tree"), {
+    this.tree = new TreePane($(".ink-tree"), this.menu, {
       onOpen: (p) => void this.openPath(p),
       onNotice: (m) => this.toast.show(m),
     });
@@ -85,7 +89,7 @@ export class ProjectShell {
       $(".ink-hsplitter"),
       $(".ink-git-list"),
       $(".ink-git-range"),
-      $(".ink-git-menu"),
+      this.menu,
       {
         onOpen: (p) => void this.openPath(p),
         onNotice: (m) => this.toast.show(m),
@@ -97,6 +101,7 @@ export class ProjectShell {
       onClose: (id) => this.closeTab(id),
       onReorder: (ids) => this.reorder(ids),
       onDropOutside: (id, x, y) => void this.dropOutside(id, x, y),
+      onMenu: (id, x, y) => this.openTabMenu(id, x, y),
     });
 
     this.findBar = new FindBar($(".ink-findbar"), {
@@ -169,6 +174,17 @@ export class ProjectShell {
     });
     this.windowMenu.close = () => this.popovers.close(windowPopover);
     this.capsule.addEventListener("click", () => this.popovers.toggle(windowPopover));
+    // カプセルが出しているのはフォルダのパス。貼ればこのフォルダが開く
+    this.capsule.addEventListener("contextmenu", (e) => {
+      if (!this.root) return;
+      e.preventDefault();
+      this.popovers.closeAll();
+      this.menu.open(
+        copyItems(this.root, (m) => this.toast.show(m)),
+        e.clientX,
+        e.clientY
+      );
+    });
     window.addEventListener("keydown", (e) => {
       if (!this.popovers.isOpen(windowPopover)) return;
       if (this.windowMenu.handleKey(e.key)) e.preventDefault();
@@ -573,6 +589,18 @@ export class ProjectShell {
       Math.max(0, active)
     ).catch(() => {});
     watchFiles(this.tabs.map((t) => t.path)).catch(() => {});
+  }
+
+  /// タブの右クリック。タブが指しているのは ID (ファイルのパス・起点版・差分)
+  /// なので、コピーはそれで取る。
+  private openTabMenu(id: string, x: number, y: number) {
+    const tab = this.tabs.find((t) => t.id === id);
+    if (!tab) return;
+    this.menu.open(
+      copyItems(tab.path, (m) => this.toast.show(m)),
+      x,
+      y
+    );
   }
 
   /// ヘッダーとウィンドウタイトルはディレクトリのパスを出す。

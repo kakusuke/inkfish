@@ -245,6 +245,13 @@ fn collect_tree_diff(
 
     for c in changes {
         use gix::diff::tree_with_rewrites::Change as C;
+        // gix はファイルの変更だけでなく、その親ディレクトリも 1 エントリずつ
+        // 返す (ディレクトリごとの改名を組み立て直せるようにするため)。中の
+        // ファイルと二重になるので落とす — 残すと「ほか N ファイル」が親の数だけ
+        // 増え、`.md` で終わる名前のディレクトリは一覧に並んでしまう。
+        if c.entry_mode().is_tree() {
+            continue;
+        }
         let (state, rel, from) = match c {
             C::Addition { location, .. } => ("A", location.to_string(), None),
             C::Deletion { location, .. } => ("D", location.to_string(), None),

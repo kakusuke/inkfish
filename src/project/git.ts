@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { copyItems, type ContextMenu } from "../chrome/ctxmenu";
 import { diffId, revId } from "../shared/rev";
 
 /// 比較の端点。Rust 側の Endpoint と対。
@@ -160,8 +161,6 @@ export class GitPane {
   private others = 0;
   private startId = "";
   private endId = "";
-  /// 右クリックメニューが対象にしている行
-  private menuPath: string | null = null;
   private openPaths = new Set<string>();
   private activePath: string | null = null;
 
@@ -170,7 +169,7 @@ export class GitPane {
     private splitter: HTMLElement,
     private listEl: HTMLElement,
     private rangeBtn: HTMLElement,
-    private menuEl: HTMLElement,
+    private menu: ContextMenu,
     private opts: { onOpen: (path: string) => void; onNotice: (msg: string) => void }
   ) {
     this.listEl.addEventListener("click", (e) => {
@@ -185,54 +184,49 @@ export class GitPane {
       e.preventDefault();
       this.openMenu(row.dataset.path!, e.clientX, e.clientY);
     });
-
-    this.menuEl.addEventListener("click", (e) => {
-      const item = (e.target as HTMLElement).closest<HTMLButtonElement>(".ink-git-mi");
-      if (!item || item.disabled) return;
-      const path = this.menuPath;
-      this.closeMenu();
-      if (path) this.runMenu(item.dataset.act!, path);
-    });
-
-    // メニューの外を押すか Esc で閉じる (ポップオーバーとは開き方が違うので自前)
-    document.addEventListener("mousedown", (e) => {
-      if (!this.menuEl.contains(e.target as Node)) this.closeMenu();
-    });
-    window.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") this.closeMenu();
-    });
   }
 
   private openMenu(path: string, x: number, y: number) {
     const change = this.changes.find((c) => c.path === path);
-    if (!change || !this.range) return;
-    this.menuPath = path;
-
-    const item = (act: string) =>
-      this.menuEl.querySelector<HTMLButtonElement>(`[data-act="${act}"]`)!;
-    const diff = item("diff");
-    const before = item("before");
-    const after = item("after");
-    diff.disabled = !this.startId;
-    // 起点に無いもの (追加・未追跡) には変更前が無い。終点に無いもの (削除) は逆
-    before.disabled = !this.startId || change.state === "A" || change.state === "?";
-    after.disabled = change.state === "D";
-    before.querySelector(".ink-git-mi-note")!.textContent = endpointLabel(this.range.start);
-    after.querySelector(".ink-git-mi-note")!.textContent = endpointLabel(this.range.end);
-
-    this.menuEl.classList.remove("hidden");
-    const r = this.menuEl.getBoundingClientRect();
-    this.menuEl.style.left = `${Math.round(Math.min(x, window.innerWidth - r.width - 8))}px`;
-    this.menuEl.style.top = `${Math.round(Math.min(y, window.innerHeight - r.height - 8))}px`;
+    const range = this.range;
+    if (!change || !range) return;
+    this.menu.open(
+      [
+        {
+          label: "差分を並べて開く",
+          disabled: !this.startId,
+          run: () => this.openChange(path, "diff"),
+        },
+        {
+          label: "変更前を開く",
+          note: endpointLabel(range.start),
+          // 起点に無いもの (追加・未追跡) には変更前が無い
+          disabled: !this.startId || change.state === "A" || change.state === "?",
+          run: () => this.openChange(path, "before"),
+        },
+        {
+          label: "変更後を開く",
+          note: endpointLabel(range.end),
+          // 終点に無いもの (削除) には変更後が無い
+          disabled: change.state === "D",
+          run: () => this.openChange(path, "after"),
+        },
+        "sep",
+        // コピーは行を開いたときと同じ ID で取る。コマンドラインに貼れば
+        // 同じ差分がそのまま開く
+        ...copyItems(this.idOf(change), (m) => this.opts.onNotice(m)),
+      ],
+      x,
+      y
+    );
   }
 
-  private closeMenu() {
-    this.menuEl.classList.add("hidden");
-    this.menuPath = null;
-  }
-
-  private runMenu(act: string, path: string) {
-    this.openChange(path, act as "diff" | "before" | "after");
+  /// 変更の行が指すもの。差分そのものを 1 つの ID にして、片側にしか無い
+  /// ファイルも並べる (無い側はその旨を出す)。改名は終点側のパスで指す。
+  /// 起点が無ければ終点側の実体を指す。
+  private idOf(change: Change): string {
+    if (this.startId) return diffId(this.startId, this.endId, change.path);
+    return this.endId ? revId(this.endId, change.path) : change.path;
   }
 
   /// 変更の行を開く。片側にしか無いもの (追加・削除) は、並べても仕方がないので
@@ -252,10 +246,7 @@ export class GitPane {
       if (change.state !== "D") this.opts.onOpen(after);
       return;
     }
-    // 差分そのものを 1 つの ID にして開く。片側にしか無いファイルも並べる
-    // (無い側はその旨を出す)。改名は終点側のパスで指す。
-    if (this.startId) this.opts.onOpen(diffId(this.startId, this.endId, change.path));
-    else this.opts.onOpen(after);
+    this.opts.onOpen(this.idOf(change));
   }
 
   /// git 管理下かどうかで、ペインごと出す / 出さないを決める。

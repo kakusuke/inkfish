@@ -113,6 +113,13 @@ md.core.ruler.push("ink-changed", (state) => {
   // 直近に見た行範囲で代わりにする — 表の 1 行は原文の 1 行なので、これで合う。
   let near: [number, number] | null = null;
 
+  // 表の行は tr 自身を目印にする。原文の 1 行がそのまま tr になり、tr の高さが
+  // その行の高さなので、これで足りる。中に挿すとセルの inline がどれも同じ行を
+  // 指すため、列の数だけ同じ目印が並ぶ (6 列で 12 個)。
+  // リストは逆に inline が行範囲を持っているので、行の中に挿すほうが細かく出る
+  // (list_item の map は継続行や子リストまで飲み込む)。
+  let inRow = 0;
+
   /// コードブロックは中の行が画面の行と 1:1 なので、行の高さから位置を出せる。
   /// mermaid は図になってしまうので、ふつうのブロックと同じ扱いにする。
   const isCode = (token: { type: string; info?: string }) =>
@@ -122,6 +129,17 @@ md.core.ruler.push("ink-changed", (state) => {
   const out: (typeof state.tokens)[number][] = [];
   for (const token of state.tokens) {
     if (token.map) near = token.map;
+
+    if (token.type === "tr_open") {
+      inRow++;
+      const here = token.map ? lines?.get(token.map[0]) : undefined;
+      if (here) {
+        token.attrSet("data-at", String(here.hunk));
+        token.attrSet("data-kind", here.kind);
+      }
+    } else if (token.type === "tr_close") {
+      inRow--;
+    }
     // 相手側だけが増えた位置のうち、このブロックの中に入るもの。
     // コードブロックでは何行目かを添えて持たせる (手前に出すと、下のほうに
     // 足された行でもブロックの頭を指してしまう)。
@@ -152,14 +170,17 @@ md.core.ruler.push("ink-changed", (state) => {
       const marked: typeof kids = [];
       let line = at[0];
       const open = () => {
+        // 相手側だけが増えた位置は tr では表せないので、表の中でもここで挿す
         while (pi < pending.length && pending[pi][0] <= line) {
           marked.push(inlineMark(pending[pi][1], pending[pi][0], "head", true));
           pi++;
         }
+        if (inRow) return;
         const here = lines?.get(line);
         if (here) marked.push(inlineMark(here, line, "head"));
       };
       const close = () => {
+        if (inRow) return;
         const here = lines?.get(line);
         if (here) marked.push(inlineMark(here, line, "tail"));
       };

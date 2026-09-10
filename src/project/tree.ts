@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { copyItems, type ContextMenu } from "../chrome/ctxmenu";
 import type { GitState } from "./git";
 
 /// 開閉のキャレット。ヘッダーのカプセルと同じシェブロン。閉じている行は
@@ -67,6 +68,7 @@ export class TreePane {
 
   constructor(
     private root: HTMLElement,
+    private menu: ContextMenu,
     private opts: { onOpen: (path: string) => void; onNotice: (msg: string) => void }
   ) {
     this.root.addEventListener("click", (e) => {
@@ -75,6 +77,16 @@ export class TreePane {
       const path = row.dataset.path!;
       if (row.dataset.dir === "1") this.toggle(path);
       else this.opts.onOpen(path);
+    });
+    this.root.addEventListener("contextmenu", (e) => {
+      const row = (e.target as HTMLElement).closest<HTMLElement>("[data-path]");
+      if (!row) return;
+      e.preventDefault();
+      this.menu.open(
+        copyItems(row.dataset.path!, (m) => this.opts.onNotice(m)),
+        e.clientX,
+        e.clientY
+      );
     });
     this.root.addEventListener("keydown", (e) => this.handleKey(e));
   }
