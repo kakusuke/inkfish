@@ -261,6 +261,7 @@ export class ProjectShell {
       getRoot: () => this.root || null,
       getRange: () => this.git.currentRange,
       onPick: (r) => void this.setGitRange(r),
+      onFetched: () => void this.refreshGit(),
       onNotice: (m) => this.toast.show(m),
     });
     const rangePopover = this.popovers.register({

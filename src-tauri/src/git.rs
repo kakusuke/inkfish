@@ -722,3 +722,102 @@ pub async fn git_hunks(before: String, after: String) -> Result<Vec<Hunk>, Strin
     .await
     .map_err(|e| e.to_string())?
 }
+
+// ---------- 取得 (fetch) ----------
+
+/// エラーの原因をたどって 1 行にする。
+/// 取り込みの失敗は入れ子になっていることが多く (転送 → 接続 → IO)、
+/// いちばん外だけ見ても「IO エラー」としか分からない。
+fn chain(e: &dyn std::error::Error) -> String {
+    let mut out = e.to_string();
+    let mut src = e.source();
+    while let Some(inner) = src {
+        let text = inner.to_string();
+        if !out.contains(&text) {
+            out.push_str(" ← ");
+            out.push_str(&text);
+        }
+        src = inner.source();
+    }
+    out
+}
+
+/// リモートから取り込む。remote が空なら既定のリモートを使う。
+///
+/// ssh も扱える。gix は自前で ssh を話すのではなく `ssh` コマンドを起動する
+/// ので、鍵も agent も known_hosts も ssh 側の作法がそのまま効く。ただし
+/// GUI から起動する以上、端末が無いのでパスフレーズを尋ねることはできない
+/// (agent に載っている必要がある)。
+///
+/// ファイルパスの remote (file:// やローカルの複製) は対象外。取り込む先が
+/// 手元にあるなら、そもそも取りに行く必要がない。
+#[tauri::command]
+pub async fn git_fetch(root: String, remote: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut repo = open(&root)?;
+
+        // ssh の呼び出し方は、そのフォルダで効いているものに合わせる。
+        // アカウントを使い分けるために GIT_SSH_COMMAND をディレクトリごとに
+        // 変える (mise / direnv) 使い方があり、GUI から起動した .app には
+        // それが届かないため。gix は core.sshCommand を見て、この環境変数で
+        // 上書きできるようになっている。
+        if let Some(cmd) = crate::shell_env_at(Path::new(&root), "GIT_SSH_COMMAND") {
+            let mut cfg = repo.config_snapshot_mut();
+            let _ = cfg.set_raw_value(&gix::config::tree::Core::SSH_COMMAND, cmd.as_str());
+        }
+
+        let found = if remote.is_empty() {
+            repo.find_default_remote(gix::remote::Direction::Fetch)
+                .ok_or_else(|| "リモートがありません".to_string())?
+                .map_err(|e| e.to_string())?
+        } else {
+            repo.find_remote(remote.as_str())
+                .map_err(|e| e.to_string())?
+        };
+
+        let url = found
+            .url(gix::remote::Direction::Fetch)
+            .ok_or_else(|| "取得先の URL がありません".to_string())?;
+        use gix::url::Scheme;
+        if !matches!(
+            url.scheme,
+            Scheme::Https | Scheme::Http | Scheme::Git | Scheme::Ssh
+        ) {
+            return Err(format!(
+                "この URL からは取得できません ({})",
+                url.scheme.as_str()
+            ));
+        }
+        let over_ssh = url.scheme == Scheme::Ssh;
+
+        // ssh は鍵を尋ねられても答えようがない (GUI なので端末が無い) ので、
+        // 失敗したときにどこを見ればよいかだけ添える
+        let hint = |msg: String| {
+            if over_ssh {
+                format!("{msg} (鍵が ssh-agent に載っているか、ホストが known_hosts にあるか確かめてください)")
+            } else {
+                msg
+            }
+        };
+
+        let outcome = found
+            .connect(gix::remote::Direction::Fetch)
+            .map_err(|e| hint(chain(&e)))?
+            .prepare_fetch(gix::progress::Discard, Default::default())
+            .map_err(|e| hint(chain(&e)))?
+            .receive(
+                gix::progress::Discard,
+                &std::sync::atomic::AtomicBool::new(false),
+            )
+            .map_err(|e| hint(chain(&e)))?;
+
+        // 何本の参照が動いたかだけ伝える (詳しくはツリーと変更ペインに出る)
+        let updated = outcome
+            .ref_map
+            .mappings
+            .len();
+        Ok(format!("{updated}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}

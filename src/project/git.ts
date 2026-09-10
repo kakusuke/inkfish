@@ -54,6 +54,11 @@ export const gitRefs = (root: string, end: Endpoint) => invoke<GitRefs>("git_ref
 export const gitChanges = (root: string, start: Endpoint, end: Endpoint) =>
   invoke<GitChanges>("git_changes", { root, start, end });
 
+/// リモートから取り込む。remote が空なら既定のリモート。
+/// 扱えるのは https / http / git の URL だけ (ssh は弾かれる)。
+export const gitFetch = (root: string, remote = "") =>
+  invoke<string>("git_fetch", { root, remote });
+
 /// 「12 分前」。日をまたぐと相対表記は意味が薄れるので、1 週間で日付に切り替える。
 export function relTime(ms: number): string {
   const diff = Date.now() - ms;
@@ -82,8 +87,36 @@ export function endpointLabel(e: Endpoint): string {
 
 export type Range = { start: Endpoint; end: Endpoint };
 
+const newerFetch = (a: number | null, b: number | null) =>
+  a && b ? Math.max(a, b) : (a ?? b);
+
 /// 比較する範囲はフォルダごとに覚える。ツリーの展開状態と同じ流儀。
 const rangeKey = (root: string) => `ink.git.range:${root}`;
+
+/// この窓から取り込んだ時刻。
+///
+/// gix は取り込んでも .git/FETCH_HEAD を書かない (git はそこに記録を残す)
+/// ので、Rust 側が見ている「最終取得」は動かない。かといって .git に独自の
+/// ファイルを置きたくないので、こちら側で覚えておく。ターミナルで git fetch
+/// したぶんは FETCH_HEAD に出るので、新しい方を採る。
+const fetchedKey = (root: string) => `ink.git.fetched:${root}`;
+
+function loadFetchedAt(root: string): number | null {
+  try {
+    const raw = localStorage.getItem(fetchedKey(root));
+    return raw ? Number(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveFetchedAt(root: string, at: number) {
+  try {
+    localStorage.setItem(fetchedKey(root), String(at));
+  } catch {
+    /* 保存できないだけ */
+  }
+}
 
 export function loadRange(root: string): Range | null {
   try {
@@ -379,6 +412,8 @@ export class RangeMenu {
   private refs: RefEntry[] = [];
   private fetchedAt: number | null = null;
   private cursor = -1;
+  /// 取得の実行中。ボタンの見た目と二重起動の防止に使う
+  private fetching = false;
 
   constructor(
     private panel: HTMLElement,
@@ -386,6 +421,7 @@ export class RangeMenu {
       getRoot: () => string | null;
       getRange: () => Range | null;
       onPick: (range: Range) => void;
+      onFetched: () => void;
       onNotice: (msg: string) => void;
     }
   ) {
@@ -409,6 +445,10 @@ export class RangeMenu {
     });
     this.filterEl.addEventListener("keydown", (e) => this.handleKey(e));
     this.listEl.addEventListener("click", (e) => {
+      if ((e.target as HTMLElement).closest(".ink-grm-fetch")) {
+        void this.runFetch();
+        return;
+      }
       const row = (e.target as HTMLElement).closest<HTMLElement>(".ink-grm-row");
       if (row) this.pick(row);
     });
@@ -450,7 +490,7 @@ export class RangeMenu {
     try {
       const res = await gitRefs(root, range.end);
       this.refs = res.entries;
-      this.fetchedAt = res.fetchedAt;
+      this.fetchedAt = newerFetch(res.fetchedAt, loadFetchedAt(root));
     } catch (e) {
       this.opts.onNotice(`ブランチの一覧を取れませんでした: ${e}`);
     }
@@ -460,10 +500,18 @@ export class RangeMenu {
   // ---------- 内部 ----------
 
   /// 表示する候補を組み立てる。1 行 = 1 つの端点。
-  private candidates(): { head: string; items: { label: string; ep: Endpoint; id?: string; note?: string }[] }[] {
+  private candidates(): {
+    head: string;
+    fetch?: boolean;
+    items: { label: string; ep: Endpoint; id?: string; note?: string }[];
+  }[] {
     const q = this.filterEl.value.trim();
     const hit = (s: string) => !q || s.toLowerCase().includes(q.toLowerCase());
-    const out: { head: string; items: { label: string; ep: Endpoint; id?: string; note?: string }[] }[] = [];
+    const out: {
+      head: string;
+      fetch?: boolean;
+      items: { label: string; ep: Endpoint; id?: string; note?: string }[];
+    }[] = [];
 
     if (this.side === "start") {
       // 分岐点。end に取り込まれていないものだけが意味を持つ
@@ -500,7 +548,7 @@ export class RangeMenu {
       const items = this.refs
         .filter((r) => r.kind === kind && hit(r.name))
         .map((r) => ({ label: r.name, ep: { kind: "rev", spec: r.name } as Endpoint, id: r.id }));
-      if (items.length) out.push({ head, items });
+      if (items.length) out.push({ head, items, fetch: kind === "remote" });
     }
 
     // 入力がどれにも当たらなければ、revspec としてそのまま使わせる
@@ -567,7 +615,18 @@ export class RangeMenu {
     for (const group of this.candidates()) {
       const head = document.createElement("p");
       head.className = "ink-grm-head";
-      head.textContent = group.head;
+      const label = document.createElement("span");
+      label.textContent = group.head;
+      head.append(label);
+      if (group.fetch) {
+        // 取り込みは待たされるし失敗もするので、ペインの ⟳ とは分けてある
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "ink-grm-fetch";
+        btn.textContent = this.fetching ? "取得中…" : "取得";
+        btn.disabled = this.fetching;
+        head.append(btn);
+      }
       nodes.push(head);
 
       for (const item of group.items) {
@@ -675,6 +734,26 @@ export class RangeMenu {
     this.render();
   }
 
+  /// リモートから取り込んで、候補と変更を取り直す。
+  private async runFetch() {
+    const root = this.opts.getRoot();
+    if (!root || this.fetching) return;
+    this.fetching = true;
+    this.render();
+    try {
+      await gitFetch(root);
+      saveFetchedAt(root, Date.now());
+      await this.reload();
+      // 取り込みで分岐点が動くことがあるので、変更ペインも取り直す
+      this.opts.onFetched();
+    } catch (e) {
+      this.opts.onNotice(`取得できませんでした: ${e}`);
+    } finally {
+      this.fetching = false;
+      this.render();
+    }
+  }
+
   private async reload() {
     const root = this.opts.getRoot();
     const range = this.opts.getRange();
@@ -682,7 +761,7 @@ export class RangeMenu {
     try {
       const res = await gitRefs(root, range.end);
       this.refs = res.entries;
-      this.fetchedAt = res.fetchedAt;
+      this.fetchedAt = newerFetch(res.fetchedAt, loadFetchedAt(root));
     } catch {
       /* 取れなければ前の候補のまま */
     }

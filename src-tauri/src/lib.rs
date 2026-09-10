@@ -1108,6 +1108,76 @@ fn open_in_editor(path: String, command: String) -> Result<(), String> {
     Ok(())
 }
 
+/// そのフォルダで効いている環境変数を、ログインシェルから 1 つ取る。
+///
+/// GUI から起動した .app はシェルの設定を持たないので、mise や direnv のような
+/// 「ディレクトリごとに環境を変える」仕掛けが効かない。ログインシェルをその
+/// フォルダで起こせば、ターミナルで作業しているときと同じ環境が再現できる。
+/// (login_shell_path と同じ事情。あちらは PATH だけを見ている)
+#[cfg(unix)]
+pub(crate) fn shell_env_at(dir: &Path, key: &str) -> Option<String> {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+    // 値は制御文字 (RS) で囲んで取り出す。対話シェルは初期化のついでに何かを
+    // 出力することがあるので、目印が無いと混ざる。
+    let script = format!("printf '\\036%s\\036' \"${key}\"");
+    // ディレクトリごとに環境を変える仕掛け (mise / direnv) は、対話シェルの
+    // hook で動くものが多い。ログインシェルで拾えなければ対話シェルでも尋ねる
+    // (対話シェルは初期化が重いので、必要なときだけ)。
+    for flag in ["-lc", "-ic"] {
+        let Ok(out) = std::process::Command::new(&shell)
+            .current_dir(dir)
+            // こちらが持っている値は落とす。残したままだと、シェルが何も
+            // 設定しなくても親の値がそのまま見えてしまい、「そのフォルダの
+            // 設定」を取ったつもりで別の値を掴む。
+            .env_remove(key)
+            .args([flag, script.as_str()])
+            .output()
+        else {
+            continue;
+        };
+        let text = String::from_utf8_lossy(&out.stdout);
+        if let Some(value) = text.split('\u{1e}').nth(1) {
+            let value = value.trim();
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Windows 版。mise / direnv の hook は PowerShell の profile に入るので、
+/// profile を読ませる (-NoProfile を付けない)。
+#[cfg(windows)]
+pub(crate) fn shell_env_at(dir: &Path, key: &str) -> Option<String> {
+    // 値は制御文字 (RS) で囲んで取り出す。profile は何かを出力することがある。
+    let script = format!("[Console]::Out.Write([char]30 + $env:{key} + [char]30)");
+    for exe in ["pwsh", "powershell"] {
+        let Ok(out) = std::process::Command::new(exe)
+            .current_dir(dir)
+            // こちらが持っている値は落とす (unix 版と同じ理由)
+            .env_remove(key)
+            .args(["-Command", script.as_str()])
+            .output()
+        else {
+            continue;
+        };
+        let text = String::from_utf8_lossy(&out.stdout);
+        if let Some(value) = text.split('\u{1e}').nth(1) {
+            let value = value.trim();
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn shell_env_at(_dir: &Path, _key: &str) -> Option<String> {
+    None
+}
+
 /// プログラム名を PATH 上で絶対パスに解決する。
 /// スラッシュを含む (絶対/相対パス指定) 場合や、見つからない場合は None を返し、
 /// 呼び出し側の既定の解決に委ねる。
@@ -1594,7 +1664,8 @@ pub fn run() {
             git::git_changes,
             git::git_refs,
             git::git_blob,
-            git::git_hunks
+            git::git_hunks,
+            git::git_fetch
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

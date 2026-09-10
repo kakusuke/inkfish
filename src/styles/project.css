@@ -665,12 +665,39 @@ body.is-pane-collapsed .ink-tabstrip {
 
 /* セクションの見出し (分岐点 / そのまま / リモート …) */
 .ink-grm-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
   padding: 8px 8px 4px;
   font-family: var(--mono);
   font-size: 9.5px;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+  color: var(--ink-2);
+}
+
+/* リモートの見出しに置く取り込みボタン */
+.ink-grm-fetch {
+  flex: none;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-family: var(--sans);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--accent);
+  cursor: default;
+}
+
+.ink-grm-fetch:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.ink-grm-fetch:disabled {
   color: var(--ink-2);
 }
 
