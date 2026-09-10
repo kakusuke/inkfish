@@ -1,4 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { GitState } from "./git";
+
+/// 開閉のキャレット。ヘッダーのカプセルと同じシェブロン。閉じている行は
+/// CSS で -90 度回して右向きにする (project.css)。
+/// 文字の ▸ / ▾ は U+25B8 系が "SMALL" 三角で、font-size を上げても
+/// 字形が小さいままなので SVG にしている。
+const TWISTY_ICON = `<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5l4 4 4-4"/></svg>`;
 
 /// ディレクトリの行に付けるフォルダの絵。静的な文字列なので innerHTML でよい。
 const FOLDER_ICON = `<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.7l1.5 1.6h4.8A1.5 1.5 0 0 1 14 6.1v5.4A1.5 1.5 0 0 1 12.5 13h-9A1.5 1.5 0 0 1 2 11.5v-7z"/></svg>`;
@@ -55,6 +62,8 @@ export class TreePane {
   private activePath: string | null = null;
   /// キーボード操作の現在位置 (表示されている行の index)
   private cursor = -1;
+  /// git の状態 (絶対パス → 状態)。色を塗るだけに使う
+  private gitStates = new Map<string, GitState>();
 
   constructor(
     private root: HTMLElement,
@@ -103,6 +112,15 @@ export class TreePane {
     this.render();
   }
 
+  /// git の状態を色で示す。渡ってくるのは HEAD からの差分で、変更ペインで
+  /// 選んでいる範囲とは連動しない (ツリーで見たいのは「今の編集状態」のため)。
+  /// DOM は作り直さず属性の付け替えだけで済ませる — 保存やコミットのたびに
+  /// 行を作り直すと、フォーカスやスクロールが飛ぶ。
+  markGit(states: Map<string, GitState>) {
+    this.gitStates = states;
+    this.paintGit();
+  }
+
   /// 開いているタブに印を付ける。
   markOpen(paths: string[], active: string | null) {
     this.openPaths = new Set(paths);
@@ -140,6 +158,7 @@ export class TreePane {
       this.root.replaceChildren(...rows);
     }
     this.paintMarks();
+    this.paintGit();
     this.paintCursor();
   }
 
@@ -156,8 +175,8 @@ export class TreePane {
 
       const twisty = document.createElement("span");
       twisty.className = "ink-tree-twisty";
-      // textContent なのでエスケープ不要
-      twisty.textContent = n.dir ? (this.expanded.has(n.path) ? "▾" : "▸") : "";
+      // 定数の文字列なのでエスケープ不要。向きは row の aria-expanded から CSS が決める
+      if (n.dir) twisty.innerHTML = TWISTY_ICON;
 
       const label = document.createElement("span");
       label.className = "ink-tree-label";
@@ -191,6 +210,26 @@ export class TreePane {
       const path = row.dataset.path!;
       row.classList.toggle("is-open", this.openPaths.has(path));
       row.classList.toggle("is-active", path === this.activePath);
+    }
+  }
+
+  /// ディレクトリには子孫の状態を集約する。畳んでいると中の変更が見えないため。
+  /// 削除されたファイルはツリーに無いので現れない (それは変更ペインの役割)。
+  private paintGit() {
+    const paths = Array.from(this.gitStates.keys());
+    for (const row of this.rows) {
+      const path = row.dataset.path!;
+      let state: GitState | undefined;
+      if (row.dataset.dir === "1") {
+        const prefix = `${path}/`;
+        const inside = paths.filter((p) => p.startsWith(prefix)).map((p) => this.gitStates.get(p)!);
+        state = inside.includes("U") ? "U" : inside.length ? "M" : undefined;
+      } else {
+        state = this.gitStates.get(path);
+      }
+      // 未追跡も、HEAD から見れば追加なので同じ色にする
+      if (state) row.dataset.git = state === "?" ? "A" : state;
+      else delete row.dataset.git;
     }
   }
 

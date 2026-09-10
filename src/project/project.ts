@@ -27,12 +27,16 @@ import {
 import { shortenPath } from "../shared/paths";
 import { DocTab } from "./tab";
 import { TreePane } from "./tree";
+import { GitPane, RangeMenu } from "./git";
+import { isRev, isVirtual } from "../shared/rev";
+import type { Range as GitRange } from "./git";
 import { TabStrip, type TabView } from "./tabs";
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
 
 const PANE_W_KEY = "ink.pane.width";
 const PANE_COLLAPSED_KEY = "ink.pane.collapsed";
+const GIT_H_KEY = "ink.git.height";
 
 /// プロジェクトウィンドウのガワ。
 ///
@@ -52,6 +56,7 @@ export class ProjectShell {
   private popovers = new PopoverGroup();
   private findBar: FindBar;
   private tree: TreePane;
+  private git: GitPane;
   private strip: TabStrip;
   private panes: HTMLElement;
   private emptyEl: HTMLElement;
@@ -59,7 +64,9 @@ export class ProjectShell {
   private capsule: HTMLButtonElement;
   private settingsPopover!: ReturnType<PopoverGroup["register"]>;
   private windowMenu!: WindowMenu;
+  private rangeMenu!: RangeMenu;
   private treeTimer: ReturnType<typeof setTimeout> | undefined;
+  private gitTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(private opts: { resolveAsset: (absPath: string) => string }) {
     this.toast = new Toast($(".ink-toast"));
@@ -72,6 +79,18 @@ export class ProjectShell {
       onOpen: (p) => void this.openPath(p),
       onNotice: (m) => this.toast.show(m),
     });
+
+    this.git = new GitPane(
+      $(".ink-git"),
+      $(".ink-hsplitter"),
+      $(".ink-git-list"),
+      $(".ink-git-range"),
+      $(".ink-git-menu"),
+      {
+        onOpen: (p) => void this.openPath(p),
+        onNotice: (m) => this.toast.show(m),
+      }
+    );
 
     this.strip = new TabStrip($(".ink-tabstrip"), {
       onSelect: (id) => this.activate(id),
@@ -105,6 +124,8 @@ export class ProjectShell {
     this.root = root;
     this.applyCaption();
     await this.tree.load(root);
+    await this.git.load(root);
+    this.tree.markGit(this.git.headStates);
     // 上限に当たったツリーは再帰監視の費用が読めないので、手動更新に落とす
     if (!this.tree.truncated) {
       try {
@@ -200,6 +221,67 @@ export class ProjectShell {
     });
 
     $('[data-act="toggle-pane"]').addEventListener("click", () => this.togglePane());
+
+    // 変更ペインの高さ。ペインは下に置くので、つまみを下げると縮む
+    const hsplit = $(".ink-hsplitter");
+    const applyH = (h: number) =>
+      document.documentElement.style.setProperty("--ink-git-h", `${h}px`);
+    try {
+      const saved = Number(localStorage.getItem(GIT_H_KEY));
+      if (saved >= 80 && saved <= 600) applyH(saved);
+    } catch {
+      /* 保存が使えないだけ */
+    }
+    hsplit.addEventListener("pointerdown", (e) => {
+      hsplit.setPointerCapture(e.pointerId);
+      const startY = e.clientY;
+      const startH = $(".ink-git").getBoundingClientRect().height;
+      const move = (ev: PointerEvent) => {
+        applyH(Math.max(80, Math.min(600, startH - (ev.clientY - startY))));
+      };
+      const up = () => {
+        hsplit.removeEventListener("pointermove", move);
+        hsplit.removeEventListener("pointerup", up);
+        try {
+          localStorage.setItem(GIT_H_KEY, String($(".ink-git").getBoundingClientRect().height));
+        } catch {
+          /* 保存が使えないだけ */
+        }
+      };
+      hsplit.addEventListener("pointermove", move);
+      hsplit.addEventListener("pointerup", up);
+    });
+
+    $('[data-act="refresh-git"]').addEventListener("click", () => void this.refreshGit());
+
+    // 比較する範囲を選ぶポップオーバー
+    const rangeBtn = $<HTMLButtonElement>(".ink-git-range");
+    const rangePanel = $(".ink-git-range-menu");
+    this.rangeMenu = new RangeMenu(rangePanel, {
+      getRoot: () => this.root || null,
+      getRange: () => this.git.currentRange,
+      onPick: (r) => void this.setGitRange(r),
+      onFetched: () => void this.refreshGit(),
+      onNotice: (m) => this.toast.show(m),
+    });
+    const rangePopover = this.popovers.register({
+      panel: rangePanel,
+      toggle: rangeBtn,
+      onOpen: () => void this.rangeMenu.opened(rangeBtn),
+    });
+    rangeBtn.addEventListener("click", () => this.popovers.toggle(rangePopover));
+  }
+
+  private async setGitRange(range: GitRange) {
+    await this.git.setRange(range);
+    // 範囲を変えてもツリーの基準 (HEAD) は変わらないが、取り直したので塗り直す
+    this.tree.markGit(this.git.headStates);
+  }
+
+  /// git の状態だけを取り直す。ツリーは色を塗り直すだけで作り直さない。
+  private async refreshGit() {
+    await this.git.refresh();
+    this.tree.markGit(this.git.headStates);
   }
 
   private togglePane() {
@@ -226,6 +308,12 @@ export class ProjectShell {
     webview.listen("tree:changed", () => {
       clearTimeout(this.treeTimer);
       this.treeTimer = setTimeout(() => void this.tree.refresh(), 200);
+    });
+
+    // .git の中身が変わった (コミット / ブランチ切替 / stash …)
+    webview.listen("git:changed", () => {
+      clearTimeout(this.gitTimer);
+      this.gitTimer = setTimeout(() => void this.refreshGit(), 250);
     });
 
     // 起動後に届いたオープン要求 / 既に開いているタブの選択要求
@@ -269,6 +357,13 @@ export class ProjectShell {
       if (!(e.metaKey || e.ctrlKey)) return;
       const viewer = this.active?.viewer;
       // ⌘⌥← / → でタブを移動
+      // 差分で並べているときは上下で変わったところを渡り歩く
+      if (e.altKey && (e.key === "ArrowDown" || e.key === "ArrowUp") && this.active?.sync) {
+        e.preventDefault();
+        this.active.sync.jump(e.key === "ArrowDown" ? 1 : -1);
+        return;
+      }
+
       if (e.altKey && (e.key === "ArrowRight" || e.key === "ArrowLeft")) {
         e.preventDefault();
         this.step(e.key === "ArrowRight" ? 1 : -1);
@@ -325,6 +420,9 @@ export class ProjectShell {
   /// プロジェクトウィンドウからの要求は、他の窓が開いていなければ
   /// "load-here" (= この窓のタブ) になる。
   private async openPath(path: string) {
+    // 起点版と差分は実ファイルではないので、窓の振り分け (open_path は
+    // canonicalize する) を通さずこのウィンドウのタブで開く
+    if (isVirtual(path)) return this.openTab(path);
     try {
       const outcome = await requestOpen(path);
       // "focused" のときは md:activate が飛んでくるので何もしない
@@ -457,14 +555,16 @@ export class ProjectShell {
       caption: t.caption,
       name: t.name,
       marp: t.isMarp,
+      diff: t.isDiff,
     }));
     this.strip.render(views, this.activeId);
     this.emptyEl.classList.toggle("hidden", this.tabs.length > 0);
-    $('[data-act="edit"]').classList.toggle("hidden", !this.active);
-    this.tree.markOpen(
-      this.tabs.map((t) => t.path),
-      this.active?.path ?? null
-    );
+    // 起点版は実ファイルが無いのでエディタでは開けない
+    const editable = !!this.active && !isRev(this.active.path);
+    $('[data-act="edit"]').classList.toggle("hidden", !editable);
+    const openPaths = this.tabs.map((t) => t.path);
+    this.tree.markOpen(openPaths, this.active?.path ?? null);
+    this.git.markOpen(openPaths, this.active?.path ?? null);
     this.applyCaption();
 
     const active = this.tabs.findIndex((t) => t.id === this.activeId);

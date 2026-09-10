@@ -545,3 +545,110 @@ body.is-exporting .ink-toast,
 body.is-exporting .ink-linkstatus {
   display: none !important;
 }
+
+/* ============================================================
+   2 つの版を左右に並べる (差分)
+   プロジェクトのタブでも、切り離した単一文書ウィンドウでも同じ形を使う。
+   ============================================================ */
+/* スクロールするのは外枠だけ。中の左右は transform でずらす (split.ts)。
+   こうすると慣性スクロールは OS の作法のまま効き、左右の進み方だけを
+   別々に調整できる。 */
+.is-diff {
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* スクロールする器そのものをツールバーの下から始める。中身を padding で
+     逃がすだけだと、器はツールバーの裏まで伸びたままなので、スクロールバーが
+     ツールバーに潜り込んでいく。タブの中では枠が逃げを持っているので 0。 */
+  margin-top: var(--ink-chrome-top, 0px);
+  height: calc(100% - var(--ink-chrome-top, 0px));
+}
+
+/* 高さを持つだけの層。長い側に合わせて JS が伸ばす */
+.ink-diff-track {
+  position: relative;
+}
+
+/* 画面に貼り付いて動かない層。この中で中身がずれる */
+.ink-diff-viewport {
+  position: sticky;
+  top: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+.ink-diff-side {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  overflow: hidden;
+  /* 上端の逃げは外側の器が持つ */
+  --ink-chrome-top: 0px;
+}
+
+/* 中身は自分ではスクロールしない */
+.is-diff .ink-viewer {
+  height: 100%;
+  overflow: hidden;
+  scrollbar-gutter: auto;
+}
+
+/* ずらすのは本文そのもの。動きを滑らかにする */
+.is-diff .ink-doc {
+  will-change: transform;
+}
+
+.ink-diff-side[data-side="before"] {
+  border-right: 1px solid var(--line);
+}
+
+/* 左右の線を結ぶ帯。ペインの間に挟まる層で、中身の操作は邪魔しない */
+.ink-diff-ribbon {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.ink-diff-ribbon path {
+  /* 濃いと本文が読みにくいので、対応が分かる程度に薄く敷く */
+  opacity: 0.18;
+}
+
+.ink-ribbon-mod {
+  fill: var(--git-modified);
+}
+
+.ink-ribbon-add {
+  fill: var(--git-added);
+}
+
+.ink-ribbon-del {
+  fill: var(--git-deleted);
+}
+
+/* 左は差分の線を右縁へ寄せる。境目を挟んで左右の線が向かい合うので、
+   どこが対応しているのかを目で追いやすい。 */
+.ink-diff-side[data-side="before"] .ink-change-bar {
+  left: auto;
+  right: -1px;
+}
+
+/* 丸めるのは外側だけにして、帯の出る内側は角のままにする。内側を丸めると
+   付け根に隙間ができ、線から素直に伸びているようには見えない。
+   (左は既定のまま左が丸い。右だけ向きを返す) */
+.ink-diff-side[data-side="after"] .ink-change-bar {
+  border-radius: 0 4px 4px 0;
+}
+
+/* その版には無いファイル (追加・削除)。空で並べるより、無いと言う方が伝わる */
+.ink-diff-side.is-absent::after {
+  content: attr(data-absent);
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  color: var(--ink-2);
+  font-size: 12.5px;
+}

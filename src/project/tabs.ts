@@ -6,6 +6,8 @@ export type TabView = {
   /// tooltip に出すファイル名
   name: string;
   marp: boolean;
+  /// 差分タブ (左右に 2 つの版を並べている)
+  diff: boolean;
 };
 
 export type StripHooks = {
@@ -125,10 +127,10 @@ export class TabStrip {
         close.textContent = "×";
 
         tab.append(label);
-        if (v.marp) {
+        if (v.diff || v.marp) {
           const badge = document.createElement("span");
           badge.className = "ink-tab-badge";
-          badge.textContent = "MARP";
+          badge.textContent = v.diff ? "DIFF" : "MARP";
           tab.append(badge);
         }
         tab.append(close);

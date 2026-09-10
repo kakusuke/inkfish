@@ -1,3 +1,5 @@
+mod git;
+
 use ignore::WalkBuilder;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::hash_map::Entry;
@@ -20,6 +22,23 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder
 /// 台帳 (OpenTabs) の突き合わせのため、正規化は全箇所でこの関数に揃える。
 fn canonicalize(path: impl AsRef<Path>) -> std::io::Result<PathBuf> {
     dunce::canonicalize(path)
+}
+
+/// 実体がディスクに無い ID の接頭辞。起点版 (rev:/<sha>/…) と、2 つの版を
+/// 並べて見る差分 (diff:/<sha>-<sha>/…)。どちらもフロントではタブのパスと
+/// 同じ位置に入るので、ファイルを触る手前で見分けて、正規化も監視もしない。
+const VIRTUAL_PREFIXES: [&str; 2] = ["rev:/", "diff:/"];
+
+fn is_virtual_id(path: &str) -> bool {
+    VIRTUAL_PREFIXES.iter().any(|p| path.starts_with(p))
+}
+
+/// タブが指すものを PathBuf にする。実体の無い ID はそのまま持つ。
+fn tab_target(path: &str) -> std::io::Result<PathBuf> {
+    if is_virtual_id(path) {
+        return Ok(PathBuf::from(path));
+    }
+    canonicalize(path)
 }
 
 /// ウィンドウ 1 つぶんの監視。
@@ -106,7 +125,7 @@ const VIEWER_H: f64 = 840.0;
 /// (bundle の fileAssociations もこの一覧に合わせてある)
 const MD_EXTS: [&str; 5] = ["md", "markdown", "mdown", "mkd", "mdx"];
 
-fn is_markdown_path(p: &Path) -> bool {
+pub(crate) fn is_markdown_path(p: &Path) -> bool {
     p.extension()
         .and_then(|e| e.to_str())
         .map(|e| MD_EXTS.iter().any(|m| e.eq_ignore_ascii_case(m)))
@@ -157,11 +176,42 @@ fn ensure_watch<'a>(
                         );
                     }
 
+                    let Some(root) = t.root.as_ref() else { return };
+
+                    // .git の中身は git の状態にだけ関わり、ツリーの構造とは無関係。
+                    // 以前はここを分けておらず、拡張子の無いファイル (.git/index など) を
+                    // ディレクトリ操作と見なして tree:changed を出していた
+                    // — コミットのたびにツリーを作り直していたことになる。
+                    // objects/** と *.lock は fetch や gc で大量に動くだけなので捨てる。
+                    // worktree や submodule では .git がファイルで実体は別の場所にあるため
+                    // 届かない。そのときは変更ペインの手動更新に頼る。
+                    let git_dir = root.join(".git");
+                    if event.paths.iter().any(|p| p.starts_with(&git_dir)) {
+                        let objects = git_dir.join("objects");
+                        let meaningful = event.paths.iter().any(|p| {
+                            p.starts_with(&git_dir)
+                                && !p.starts_with(&objects)
+                                && p.extension().map_or(true, |e| e != "lock")
+                        });
+                        if meaningful {
+                            let _ = app.emit_to(emit_label.as_str(), "git:changed", ());
+                        }
+                        return;
+                    }
+
+                    // md の中身が変われば、木は変わらなくても git の状態は変わる
+                    if event
+                        .paths
+                        .iter()
+                        .any(|p| p.starts_with(root) && is_markdown_path(p))
+                    {
+                        let _ = app.emit_to(emit_label.as_str(), "git:changed", ());
+                    }
+
                     // ツリーの見た目が変わりうるのは md / ディレクトリの増減だけ。
                     // 中身の変更 (Modify(Data)) では木は変わらないので出さない。
                     // 拡張子つきで md でないものは、エディタの一時ファイル
                     // (`.swp` / `~`) を弾くために除く。
-                    let Some(root) = t.root.as_ref() else { return };
                     let structural = matches!(
                         event.kind,
                         Create(_) | Remove(_) | Modify(notify::event::ModifyKind::Name(_))
@@ -607,7 +657,7 @@ async fn open_path(
     window: tauri::WebviewWindow,
     path: String,
 ) -> Result<OpenOutcome, String> {
-    let canon = canonicalize(&path).map_err(|e| format!("ファイルが見つかりません: {e}"))?;
+    let canon = tab_target(&path).map_err(|e| format!("ファイルが見つかりません: {e}"))?;
     let canon_str = canon.to_string_lossy().into_owned();
 
     let existing = {
@@ -808,7 +858,7 @@ fn window_rects(app: AppHandle) -> Vec<WindowRect> {
 /// (台帳は label ごとに分かれているので取り違えない)。
 #[tauri::command]
 async fn tear_out_tab(app: AppHandle, path: String, x: f64, y: f64) -> Result<(), String> {
-    let canon = canonicalize(&path).map_err(|e| format!("ファイルが見つかりません: {e}"))?;
+    let canon = tab_target(&path).map_err(|e| format!("ファイルが見つかりません: {e}"))?;
     // カーソルの少し右下にタブが来る位置に置き、落とした先のモニタへ収める
     let origin = clamp_to_monitor(&app, x - 90.0, y - 16.0);
     spawn_viewer_window_at(&app, canon.to_string_lossy().into_owned(), Some(origin))
@@ -842,7 +892,7 @@ fn clamp_to_monitor(app: &AppHandle, x: f64, y: f64) -> (f64, f64) {
 /// 自分のタブを閉じるのは呼び出し側の仕事。
 #[tauri::command]
 fn adopt_tab(app: AppHandle, label: String, path: String) -> Result<(), String> {
-    let canon = canonicalize(&path).map_err(|e| format!("ファイルが見つかりません: {e}"))?;
+    let canon = tab_target(&path).map_err(|e| format!("ファイルが見つかりません: {e}"))?;
     app.emit_to(
         label.as_str(),
         "tab:adopt",
@@ -895,11 +945,17 @@ fn get_startup_file(
 
 /// プロジェクトウィンドウが起動時に開くルートを返す。
 ///
+/// PendingProject は JS が起動する前にルートを積んでおくための箱で、取り出したら
+/// 消える。webview が読み込み直されると 2 回目は空になり、ツリーもタブも出せなく
+/// なってしまうので、ウィンドウが閉じるまで残る ProjectRoots に落とす
+/// (dev の HMR で毎回そうなるほか、webview が再読み込みされたときの備えでもある)。
+///
 /// あわせて空のウィンドウを片付ける。ディレクトリを開くとプロジェクト
 /// ウィンドウが新しく出るので、それを頼んだ空の窓 (起動直後の main など) が
 /// 使われないまま残ってしまう。ここでやるのは、この時点なら他の窓が
 /// すべて作られていて「本当に空か」を判定できるため
 /// (CLI / Finder / メニュー / D&D のどの経路でも同じ後始末になる)。
+/// 2 度目に呼ばれても、この窓は ProjectRoots にあるので空とは見なされない。
 #[tauri::command]
 fn get_project_root(app: AppHandle, window: tauri::WebviewWindow) -> Option<String> {
     let root = app
@@ -907,7 +963,15 @@ fn get_project_root(app: AppHandle, window: tauri::WebviewWindow) -> Option<Stri
         .0
         .lock()
         .unwrap()
-        .remove(window.label());
+        .remove(window.label())
+        .or_else(|| {
+            app.state::<ProjectRoots>()
+                .0
+                .lock()
+                .unwrap()
+                .get(window.label())
+                .map(|p| p.to_string_lossy().into_owned())
+        });
     close_empty_windows(&app, window.label());
     root
 }
@@ -967,6 +1031,15 @@ fn cli_targets() -> (Vec<PathBuf>, Vec<PathBuf>) {
             if arg.starts_with('-') {
                 continue;
             }
+        }
+        // 実体の無い ID (起点版・差分) はそのまま渡す。ファイルではないので
+        // 正規化できないが、ウィンドウはこれを開ける
+        if is_virtual_id(&arg) {
+            let p = PathBuf::from(&arg);
+            if !files.contains(&p) {
+                files.push(p);
+            }
+            continue;
         }
         let Ok(p) = canonicalize(&arg) else { continue };
         if p.is_dir() {
@@ -1033,6 +1106,76 @@ fn open_in_editor(path: String, command: String) -> Result<(), String> {
         .spawn()
         .map_err(|e| format!("エディタの起動に失敗しました: {e}"))?;
     Ok(())
+}
+
+/// そのフォルダで効いている環境変数を、ログインシェルから 1 つ取る。
+///
+/// GUI から起動した .app はシェルの設定を持たないので、mise や direnv のような
+/// 「ディレクトリごとに環境を変える」仕掛けが効かない。ログインシェルをその
+/// フォルダで起こせば、ターミナルで作業しているときと同じ環境が再現できる。
+/// (login_shell_path と同じ事情。あちらは PATH だけを見ている)
+#[cfg(unix)]
+pub(crate) fn shell_env_at(dir: &Path, key: &str) -> Option<String> {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+    // 値は制御文字 (RS) で囲んで取り出す。対話シェルは初期化のついでに何かを
+    // 出力することがあるので、目印が無いと混ざる。
+    let script = format!("printf '\\036%s\\036' \"${key}\"");
+    // ディレクトリごとに環境を変える仕掛け (mise / direnv) は、対話シェルの
+    // hook で動くものが多い。ログインシェルで拾えなければ対話シェルでも尋ねる
+    // (対話シェルは初期化が重いので、必要なときだけ)。
+    for flag in ["-lc", "-ic"] {
+        let Ok(out) = std::process::Command::new(&shell)
+            .current_dir(dir)
+            // こちらが持っている値は落とす。残したままだと、シェルが何も
+            // 設定しなくても親の値がそのまま見えてしまい、「そのフォルダの
+            // 設定」を取ったつもりで別の値を掴む。
+            .env_remove(key)
+            .args([flag, script.as_str()])
+            .output()
+        else {
+            continue;
+        };
+        let text = String::from_utf8_lossy(&out.stdout);
+        if let Some(value) = text.split('\u{1e}').nth(1) {
+            let value = value.trim();
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Windows 版。mise / direnv の hook は PowerShell の profile に入るので、
+/// profile を読ませる (-NoProfile を付けない)。
+#[cfg(windows)]
+pub(crate) fn shell_env_at(dir: &Path, key: &str) -> Option<String> {
+    // 値は制御文字 (RS) で囲んで取り出す。profile は何かを出力することがある。
+    let script = format!("[Console]::Out.Write([char]30 + $env:{key} + [char]30)");
+    for exe in ["pwsh", "powershell"] {
+        let Ok(out) = std::process::Command::new(exe)
+            .current_dir(dir)
+            // こちらが持っている値は落とす (unix 版と同じ理由)
+            .env_remove(key)
+            .args(["-Command", script.as_str()])
+            .output()
+        else {
+            continue;
+        };
+        let text = String::from_utf8_lossy(&out.stdout);
+        if let Some(value) = text.split('\u{1e}').nth(1) {
+            let value = value.trim();
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn shell_env_at(_dir: &Path, _key: &str) -> Option<String> {
+    None
 }
 
 /// プログラム名を PATH 上で絶対パスに解決する。
@@ -1413,6 +1556,30 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        // 起点版のファイルを返す。画像や PDF をそのまま <img> / <embed> に
+        // 渡せるようにするためのもので、本文は git_blob が返す。
+        //
+        // URL は rev://localhost/<sha>/<絶対パス>。Windows では Tauri が
+        // http://rev.localhost/… に読み替えるが、パスの形は同じなので
+        // ここは共通で扱える。フロントは resolveAsset でこの形に組み替える。
+        .register_uri_scheme_protocol("rev", |_ctx, request| {
+            let decoded = git::percent_decode(request.uri().path());
+            let served = git::split_rev_path(&decoded)
+                .ok_or_else(|| "URL の形が違います".to_string())
+                .and_then(|(sha, path)| {
+                    git::blob_at(&sha, &path).map(|data| (git::mime_of(&path), data))
+                });
+            match served {
+                Ok((mime, data)) => tauri::http::Response::builder()
+                    .header("Content-Type", mime)
+                    .body(data)
+                    .unwrap_or_default(),
+                Err(_) => tauri::http::Response::builder()
+                    .status(tauri::http::StatusCode::NOT_FOUND)
+                    .body(Vec::new())
+                    .unwrap_or_default(),
+            }
+        })
         .manage(WatchState::default())
         .manage(OpenTabs::default())
         .manage(PendingOpen::default())
@@ -1492,7 +1659,13 @@ pub fn run() {
             set_window_origin,
             dock_hover,
             close_self,
-            export_pdf
+            export_pdf,
+            git::git_probe,
+            git::git_changes,
+            git::git_refs,
+            git::git_blob,
+            git::git_hunks,
+            git::git_fetch
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

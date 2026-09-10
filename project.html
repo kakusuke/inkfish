@@ -63,6 +63,34 @@
     <!-- 開いているウィンドウとタブの一覧 -->
     <div class="ink-window-menu hidden" role="listbox" aria-label="開いているウィンドウ"></div>
 
+    <!-- 変更の行を右クリックしたときのメニュー。ペインの外に置く理由は下と同じ -->
+    <div class="ink-git-menu hidden" role="menu">
+      <button type="button" class="ink-git-mi" data-act="diff" role="menuitem">
+        <span class="ink-git-mi-label">差分を並べて開く</span>
+        <span class="ink-git-mi-note"></span>
+      </button>
+      <button type="button" class="ink-git-mi" data-act="before" role="menuitem">
+        <span class="ink-git-mi-label">変更前を開く</span>
+        <span class="ink-git-mi-note"></span>
+      </button>
+      <button type="button" class="ink-git-mi" data-act="after" role="menuitem">
+        <span class="ink-git-mi-label">変更後を開く</span>
+        <span class="ink-git-mi-note"></span>
+      </button>
+    </div>
+
+    <!-- 比較する範囲を選ぶ。.ink-pane は overflow:hidden なので本体の外に置き、
+         開くときにボタンの位置へ合わせる (ウィンドウ切替メニューと同じ理由) -->
+    <div class="ink-git-range-menu hidden" role="dialog" aria-label="比較する範囲">
+      <!-- 「どこから」の候補は「どこまで」に依存する (分岐点は 2 点で決まる) ので、
+           先に決める側を上に置く。中身は RangeMenu が組む -->
+      <p class="ink-grm-head">どこまで</p>
+      <div class="ink-grm-ends"></div>
+      <p class="ink-grm-head ink-grm-fromhead">どこから</p>
+      <input class="ink-grm-filter" type="text" placeholder="絞り込み / HEAD~3 など" spellcheck="false" autocomplete="off" />
+      <div class="ink-grm-list" role="listbox"></div>
+    </div>
+
     <!-- 読書プログレスバー(ツールバー下端の細いライン) -->
     <div class="ink-progress" aria-hidden="true"></div>
 
@@ -103,6 +131,25 @@
         </div>
         <!-- ツリーは TreePane が組む -->
         <div class="ink-tree" role="tree" aria-label="Markdown ファイル"></div>
+
+        <!-- git の変更。管理外のフォルダでは出さない (GitPane が hidden を外す) -->
+        <div class="ink-hsplitter hidden" role="separator" aria-orientation="horizontal" title="高さを変える"></div>
+        <section class="ink-git hidden" aria-label="git の変更">
+          <div class="ink-pane-head">
+            <span class="ink-pane-title">変更</span>
+            <button data-act="refresh-git" class="ink-pane-btn" title="取り直す">
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 8a5 5 0 1 1-1.6-3.7"/><path d="M13.2 2.6v2.6h-2.6"/></svg>
+            </button>
+          </div>
+          <!-- 比較する範囲。押すと start / end を選ぶポップオーバーが出る -->
+          <button class="ink-git-range" aria-haspopup="listbox" aria-expanded="false" title="比較する範囲">
+            <span class="ink-git-range-label"></span>
+            <span class="ink-caret" aria-hidden="true">
+              <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5l4 4 4-4"/></svg>
+            </span>
+          </button>
+          <div class="ink-git-list" role="list"></div>
+        </section>
       </aside>
 
       <!-- ペインの幅を変えるつまみ -->
