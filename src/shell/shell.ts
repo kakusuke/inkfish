@@ -28,7 +28,7 @@ import {
   watchFiles,
 } from "../chrome/files";
 import { isRev, splitDiff } from "../shared/rev";
-import { keepSynced, loadPair, makeSides, type DiffSync, type Hunk } from "../viewer/split";
+import { keepSynced, loadPair, makeSides, type DiffSync } from "../viewer/split";
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
 /// 同じ data-act を持つ要素が複数ある (ツールバーと空の状態の「フォルダを開く」)
@@ -68,7 +68,6 @@ export class AppShell {
   private splitMode = false;
   private sync: DiffSync | null = null;
   /// 行差分。左右の位置合わせに使う
-  private hunks: Hunk[] = [];
   private resolveAsset: (absPath: string) => string;
 
   constructor(opts: { resolveAsset: (absPath: string) => string }) {
@@ -290,9 +289,9 @@ export class AppShell {
         content,
         sides.track,
         sides.viewport,
+        sides.ribbon,
         this.beforeViewer,
-        this.viewer,
-        () => this.hunks
+        this.viewer
       );
     } else {
       this.beforeHost = null;
@@ -359,7 +358,6 @@ export class AppShell {
       this.toast.show("どちらの版にもありません");
       return;
     }
-    this.hunks = got.hunks;
     this.sync?.toTop();
     this.sync?.refresh();
 

@@ -5,7 +5,7 @@
 // ガワでも「その ID を開いているだけ」になり、置き場所が違うだけで済む。
 
 import { invoke } from "@tauri-apps/api/core";
-import type { DocumentViewer } from "./viewer";
+import type { ChangeRun, DocumentViewer } from "./viewer";
 import { dirname } from "../shared/paths";
 import { readMdFile } from "../chrome/files";
 
@@ -37,6 +37,22 @@ function linesOf(hunks: Hunk[], side: "before" | "after"): Map<number, ChangeAt>
     const start = side === "before" ? h.beforeStart : h.afterStart;
     const end = side === "before" ? h.beforeEnd : h.afterEnd;
     for (let i = start; i < end; i++) out.set(i, { kind, hunk });
+  });
+  return out;
+}
+
+/// 相手側だけが増えた (あるいは減った) 位置。
+///
+/// その側には行が無いので線も引けないが、「ここに入った」ことは示したい。
+/// markdown.ts がこの位置に点の目印を埋めるので、左右を結ぶ帯の頂点が
+/// ブロックの境目に落ちる。
+function insertPoints(hunks: Hunk[], side: "before" | "after"): Map<number, ChangeAt> {
+  const out = new Map<number, ChangeAt>();
+  hunks.forEach((h, hunk) => {
+    const start = side === "before" ? h.beforeStart : h.afterStart;
+    const end = side === "before" ? h.beforeEnd : h.afterEnd;
+    // その側に行が無い = 相手側だけが増えた (起点側なら追加、終点側なら削除)
+    if (start === end) out.set(start, { kind: side === "before" ? "add" : "del", hunk });
   });
   return out;
 }
@@ -75,8 +91,18 @@ export function makeSides(host: HTMLElement) {
     viewport.appendChild(el);
     return el;
   };
-  // 左が起点、右が終点
-  return { beforeHost: side("before"), afterHost: side("after"), track, viewport };
+
+  const beforeHost = side("before");
+  const afterHost = side("after");
+
+  // 左右の線を結ぶ帯。左右にまたがるので、面を分けずに viewport 全体へ重ねる
+  const ribbon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  ribbon.setAttribute("class", "ink-diff-ribbon");
+  ribbon.setAttribute("aria-hidden", "true");
+  ribbon.setAttribute("preserveAspectRatio", "none");
+  viewport.appendChild(ribbon);
+
+  return { beforeHost, afterHost, track, viewport, ribbon };
 }
 
 /// 片側を描く。その版に無ければ (src が null) 器に断りを出す。
@@ -87,7 +113,8 @@ async function showSide(
   src: string | null,
   absentLabel: string,
   name: string,
-  changedLines: Map<number, ChangeAt>
+  changedLines: Map<number, ChangeAt>,
+  insertedAt: Map<number, ChangeAt>
 ): Promise<boolean> {
   if (src === null) {
     host.dataset.absent = absentLabel;
@@ -95,7 +122,7 @@ async function showSide(
     return false;
   }
   host.classList.remove("is-absent");
-  await viewer.setSource(src, { baseDir: dirname(id), name, changedLines });
+  await viewer.setSource(src, { baseDir: dirname(id), name, changedLines, insertedAt });
   return true;
 }
 
@@ -108,7 +135,7 @@ export async function loadPair(
   before: { viewer: DocumentViewer; id: string; host: HTMLElement },
   after: { viewer: DocumentViewer; id: string; host: HTMLElement },
   name: string
-): Promise<{ before: boolean; after: boolean; hunks: Hunk[] }> {
+): Promise<{ before: boolean; after: boolean }> {
   const [beforeSrc, afterSrc] = await Promise.all([
     readMdFile(before.id).catch(() => null),
     readMdFile(after.id).catch(() => null),
@@ -116,12 +143,16 @@ export async function loadPair(
 
   let beforeLines = new Map<number, ChangeAt>();
   let afterLines = new Map<number, ChangeAt>();
+  let beforeInserts = new Map<number, ChangeAt>();
+  let afterInserts = new Map<number, ChangeAt>();
   let hunks: Hunk[] = [];
   if (beforeSrc !== null && afterSrc !== null) {
     // 差分が取れなくても中身は見せられるので、失敗したら印なしで進む
     hunks = await gitHunks(before.id, after.id).catch(() => [] as Hunk[]);
     beforeLines = linesOf(hunks, "before");
     afterLines = linesOf(hunks, "after");
+    beforeInserts = insertPoints(hunks, "before");
+    afterInserts = insertPoints(hunks, "after");
   } else if (afterSrc !== null) {
     afterLines = allLines(afterSrc, "add");
   } else if (beforeSrc !== null) {
@@ -136,7 +167,8 @@ export async function loadPair(
       afterSrc,
       "変更後にはありません",
       name,
-      afterLines
+      afterLines,
+      afterInserts
     ),
     showSide(
       before.viewer,
@@ -145,10 +177,11 @@ export async function loadPair(
       beforeSrc,
       "変更前にはありません",
       name,
-      beforeLines
+      beforeLines,
+      beforeInserts
     ),
   ]);
-  return { after: a, before: b, hunks };
+  return { after: a, before: b };
 }
 
 // ---------- 左右の連動 ----------
@@ -172,43 +205,6 @@ function mapPos(y: number, from: number[], to: number[]): number {
   return to[i] + Math.min(local, span);
 }
 
-/// ブロックの「元テキストの開始行」と、その面での上端・下端。
-/// transform でずらしていても動かないよう、レイアウト上の値で測る。
-type LineSpan = { line: number; top: number; bottom: number };
-
-function lineSpans(viewer: DocumentViewer): LineSpan[] {
-  const doc = viewer.contentEl;
-  const base = doc.offsetTop;
-  return Array.from(doc.querySelectorAll<HTMLElement>("[data-line]"))
-    .map((el) => ({
-      line: Number(el.dataset.line),
-      top: base + el.offsetTop,
-      bottom: base + el.offsetTop + el.offsetHeight,
-    }))
-    .sort((x, y) => x.line - y.line);
-}
-
-/// 元テキストの行が、その面のどのあたりに来るか。
-///
-/// ブロックの上端だけを見ていると、リストや表の「中ほどの行が変わった」を
-/// 指せない (まるごと 1 つの位置になってしまい、隣と揃えようがない)。
-/// ブロックが受け持つ行数で按分して、中の位置も出せるようにする。
-function lineToY(spans: LineSpan[], line: number): number {
-  if (!spans.length) return 0;
-  for (let i = 0; i < spans.length; i++) {
-    const s = spans[i];
-    if (line <= s.line) return s.top;
-    const next = spans[i + 1];
-    if (!next) break;
-    if (line < next.line) {
-      const rows = Math.max(1, next.line - s.line);
-      const ratio = Math.min(1, (line - s.line) / rows);
-      return s.top + ratio * (s.bottom - s.top);
-    }
-  }
-  return spans[spans.length - 1].bottom;
-}
-
 export type DiffSync = {
   /// 変わったところへ順に移動する
   jump(dir: 1 | -1): void;
@@ -219,6 +215,120 @@ export type DiffSync = {
   /// 連動をやめる
   stop(): void;
 };
+
+/// 要素が root の中のどこにあるか。transform は効いていない値 (レイアウト上の位置)。
+function offsetIn(el: HTMLElement, root: HTMLElement): { x: number; y: number } {
+  let x = 0;
+  let y = 0;
+  let cur: HTMLElement | null = el;
+  while (cur && cur !== root) {
+    x += cur.offsetLeft;
+    y += cur.offsetTop;
+    cur = cur.offsetParent as HTMLElement | null;
+  }
+  return { x, y };
+}
+
+/// 左右を結ぶ 1 本の帯。まとまりごとに、起点側と終点側の受け持つ範囲を持つ。
+/// 片側だけの差分 (追加・削除) は、その側が高さゼロの点になる。
+type Band = {
+  bTop: number;
+  bBottom: number;
+  aTop: number;
+  aBottom: number;
+  kind: string;
+};
+
+/// 左右の線を結ぶ帯を描く。
+///
+/// 線だけだと「左のこれが右のこれになった」が目で追えない。上端どうし・
+/// 下端どうしをなだらかに結んで中を薄く塗ると、対応が一目で分かる。片側が
+/// 点のときは三角になり、その頂点はブロックの境目を指す。
+///
+/// 相手が画面の外にあるものは描かない。伸びきった帯は対応を示さないうえ、
+/// 斜めの筋が本文に重なって読みにくいだけになる。
+function drawRibbon(
+  ribbon: SVGElement,
+  bands: Band[],
+  x0: number,
+  x1: number,
+  bShift: number,
+  aShift: number,
+  width: number,
+  height: number
+) {
+  const c = (x0 + x1) / 2;
+  const out = (top: number, bottom: number) => bottom < -40 || top > height + 40;
+  const paths: string[] = [];
+  for (const band of bands) {
+    const bTop = band.bTop - bShift;
+    const bBottom = band.bBottom - bShift;
+    const aTop = band.aTop - aShift;
+    const aBottom = band.aBottom - aShift;
+    if (out(bTop, bBottom) || out(aTop, aBottom)) continue;
+    paths.push(
+      `<path d="M${x0},${bTop} C${c},${bTop} ${c},${aTop} ${x1},${aTop}` +
+        ` L${x1},${aBottom} C${c},${aBottom} ${c},${bBottom} ${x0},${bBottom} Z"` +
+        ` class="ink-ribbon-${band.kind}"/>`
+    );
+  }
+  ribbon.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  ribbon.innerHTML = paths.join("");
+}
+
+/// 左右のまとまりを突き合わせて帯にする。
+///
+/// 突き合わせるのは線そのもの (changeRuns)。線と別に範囲を組み立てると、
+/// まとめ方の違いがそのまま帯のズレになって出る。
+///
+/// まとめ方は左右で食い違うことがある — 片方では 1 本、もう片方では 2 本に
+/// 割れる。その場合は 1 本の線に 2 つの帯が刺さる形になり、それでよい。
+/// 相手に線が無いもの (まるごとの追加・削除) は、相手側の点を頂点にする。
+function bandsOf(before: DocumentViewer, after: DocumentViewer): Band[] {
+  const bRuns = before.changeRuns();
+  const aRuns = after.changeRuns();
+  const bPoints = before.changePoints();
+  const aPoints = after.changePoints();
+
+  const mate = (runs: ChangeRun[], hunks: number[]) =>
+    runs.find((r) => r.hunks.some((h) => hunks.includes(h)));
+  const pointOf = (points: Map<number, number>, hunks: number[]) => {
+    for (const h of hunks) {
+      const y = points.get(h);
+      if (y !== undefined) return y;
+    }
+    return null;
+  };
+
+  const bands: Band[] = [];
+  const paired = new Set<ChangeRun>();
+  for (const b of bRuns) {
+    const a = mate(aRuns, b.hunks);
+    if (a) {
+      paired.add(a);
+      bands.push({ bTop: b.top, bBottom: b.bottom, aTop: a.top, aBottom: a.bottom, kind: b.kind });
+      continue;
+    }
+    const y = pointOf(aPoints, b.hunks);
+    if (y !== null) {
+      bands.push({ bTop: b.top, bBottom: b.bottom, aTop: y, aBottom: y, kind: b.kind });
+    }
+  }
+  for (const a of aRuns) {
+    if (paired.has(a)) continue;
+    const b = mate(bRuns, a.hunks);
+    if (b) {
+      bands.push({ bTop: b.top, bBottom: b.bottom, aTop: a.top, aBottom: a.bottom, kind: a.kind });
+      continue;
+    }
+    const y = pointOf(bPoints, a.hunks);
+    if (y !== null) {
+      bands.push({ bTop: y, bBottom: y, aTop: a.top, aBottom: a.bottom, kind: a.kind });
+    }
+  }
+
+  return bands.sort((x, y) => x.bTop - y.bTop || x.aTop - y.aTop);
+}
 
 /// 左右の動きを合わせる。
 ///
@@ -234,9 +344,9 @@ export function keepSynced(
   scroller: HTMLElement,
   track: HTMLElement,
   viewport: HTMLElement,
+  ribbon: SVGElement,
   before: DocumentViewer,
-  after: DocumentViewer,
-  hunks: () => Hunk[]
+  after: DocumentViewer
 ): DiffSync {
   // 外枠 / 起点側 / 終点側 それぞれの対応点
   let tPts: number[] = [0, 0];
@@ -245,6 +355,16 @@ export function keepSynced(
 
   let bMax = 0;
   let aMax = 0;
+
+  // 左右を結ぶ帯。中身が変わるたびに測り直す (apply では読むだけ)
+  let bands: Band[] = [];
+  // 帯の左右の端。線が本文の縁に出るので、そこへ合わせる
+  let x0 = 0;
+  let x1 = 0;
+  // 帯は viewport の中に描くが、範囲は本文の中の座標。本文が枠のどこから
+  // 始まるかを足さないと、そのぶん上にずれる
+  let bY = 0;
+  let aY = 0;
 
   /// 画面のどこを対応点として揃えるか。
   ///
@@ -257,10 +377,11 @@ export function keepSynced(
     const y = scroller.scrollTop;
     const anchor = ANCHOR * scroller.clientHeight;
     // 基準の位置で対応を取り、そのぶん戻して画面の上端に直す
-    const b = Math.max(0, Math.min(bMax, mapPos(y + anchor, tPts, bPts) - anchor));
-    const a = Math.max(0, Math.min(aMax, mapPos(y + anchor, tPts, aPts) - anchor));
-    before.contentEl.style.transform = `translateY(${-Math.round(b)}px)`;
-    after.contentEl.style.transform = `translateY(${-Math.round(a)}px)`;
+    const b = Math.round(Math.max(0, Math.min(bMax, mapPos(y + anchor, tPts, bPts) - anchor)));
+    const a = Math.round(Math.max(0, Math.min(aMax, mapPos(y + anchor, tPts, aPts) - anchor)));
+    before.contentEl.style.transform = `translateY(${-b}px)`;
+    after.contentEl.style.transform = `translateY(${-a}px)`;
+    drawRibbon(ribbon, bands, x0, x1, b - bY, a - aY, viewport.clientWidth, scroller.clientHeight);
   };
 
   const rebuild = () => {
@@ -275,12 +396,17 @@ export function keepSynced(
     bMax = Math.max(0, bEnd - h);
     aMax = Math.max(0, aEnd - h);
 
-    const bSpans = lineSpans(before);
-    const aSpans = lineSpans(after);
+    bands = bandsOf(before, after);
 
-    // 対応点は「変わったまとまりの頭と尻」。片側にしか無いまとまり
-    // (まるごとの追加・削除) でも、もう片方はその場に留まる点として置ける。
-    // これを外すと、追加のところで片方だけ進んでしまいずれる。
+    // 帯の端は本文の縁 — 差分の線が出ているところ。線は縁に 1px 重ねて
+    // 幅 4px なので、その外側から出す
+    const bo = offsetIn(before.contentEl, viewport);
+    const ao = offsetIn(after.contentEl, viewport);
+    x0 = bo.x + before.contentEl.offsetWidth + 3;
+    x1 = ao.x - 1;
+    bY = bo.y;
+    aY = ao.y;
+
     bPts = [0];
     aPts = [0];
     const push = (bv: number, av: number) => {
@@ -292,10 +418,18 @@ export function keepSynced(
       bPts.push(bv);
       aPts.push(av);
     };
-    for (const h of hunks()) {
-      push(lineToY(bSpans, h.beforeStart), lineToY(aSpans, h.afterStart));
-      push(lineToY(bSpans, h.beforeEnd), lineToY(aSpans, h.afterEnd));
-    }
+
+    // 対応点は帯の頭と尻。片側が点の帯 (まるごとの追加・削除) では、その側の
+    // 頭と尻が同じ値になるので、そこで片方が止まって相手が流れる。
+    const points = bands.flatMap((b) => [
+      { b: b.bTop, a: b.aTop },
+      { b: b.bBottom, a: b.aBottom },
+    ]);
+
+    // 左右それぞれで前へ進む順に並べてから積む (両側を別々に回しているので、
+    // そのままでは順序が入れ替わり、補間が壊れる)
+    points.sort((x, y) => x.b - y.b || x.a - y.a);
+    for (const p of points) push(p.b, p.a);
     push(bEnd, aEnd);
     if (bPts.length < 2) {
       bPts = [0, bEnd];

@@ -56,6 +56,32 @@
    font-size や padding で長さも変わって不揃いになる。位置を測って本文の
    左余白に置き、続いているものは 1 本にまとめる (viewer.ts の paintChangeBars)。
    レンダリング結果そのものには手を触れない。 */
+/* 差分の位置を測るための目印 (markdown.ts が本文に埋める)。幅も高さもゼロ
+   なので、折り返しにも行の高さにも影響しない。上端がその行の頭を指す。 */
+.ink-at {
+  display: inline-block;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* 行の上端と下端。高さゼロなので、揃える先がそのまま位置になる。
+   画像のように背の高いものが混ざっていても、その行の高さが出る。 */
+.ink-at-head {
+  vertical-align: top;
+}
+
+.ink-at-tail {
+  vertical-align: bottom;
+}
+
+/* ブロックとブロックの境目に置くもの。そのままだと 1 行ぶんの高さができて
+   しまうので流れから外す。置かれる場所は変わらないので、測るには足りる。 */
+.ink-at-gap {
+  position: absolute;
+}
+
 .ink-change-bar {
   position: absolute;
   /* 本文カードの左の枠に重ねる。本文の中に引いてしまうと、引用の縁飾りの

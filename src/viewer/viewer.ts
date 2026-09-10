@@ -40,6 +40,35 @@ export type ViewerOptions = {
   idPrefix?: string;
 };
 
+/// 変わったところの位置 (contentEl の中の座標)。
+///
+/// 差分の見せ方 — 縦線・左右を結ぶ帯・スクロールの対応点 — はすべてこれ 1 つ
+/// から出す。物差しは本文に埋めた目印 (markdown.ts) で、目印が乗っている行を
+/// そのまま範囲にする。目印を置けないコードブロックは行の高さから、図のように
+/// 行が画面に対応しないものはブロックの寸法から出す。
+export type ChangeSpan = {
+  hunk: number;
+  kind: string;
+  top: number;
+  bottom: number;
+  /// 相手側だけが増えた位置。高さを持たず、境目を指す点として使う
+  point: boolean;
+};
+
+/// 線 1 本ぶんのまとまり。近い差分をつないだもの。
+export type ChangeRun = { top: number; bottom: number; kind: string; hunks: number[] };
+
+/// 要素が root の中のどこにあるか。transform の影響を受けないレイアウト上の値。
+export function offsetTopIn(el: HTMLElement, root: HTMLElement): number {
+  let y = 0;
+  let cur: HTMLElement | null = el;
+  while (cur && cur !== root) {
+    y += cur.offsetTop;
+    cur = cur.offsetParent as HTMLElement | null;
+  }
+  return y;
+}
+
 const MARKUP = `
   <article class="ink-doc markdown-body hidden"></article>
   <div class="ink-slides hidden"></div>
@@ -56,6 +85,8 @@ export class DocumentViewer {
   private source = "";
   /// 差分で変わった行 (元テキストの 0 始まり)。印を付けるためだけに持つ
   private changedLines: Map<number, ChangeAt> | null = null;
+  /// 相手側だけが増えた位置。ブロックの内側なら、そのブロックも変わったとみなす
+  private insertedAt: Map<number, ChangeAt> | null = null;
   /// 変更の線を引き直すのを 1 フレームにまとめるための印
   private barsQueued = false;
   private barObserver: ResizeObserver;
@@ -143,12 +174,18 @@ export class DocumentViewer {
   /// 渡すと、その行を含むブロックに印が付く。左右に並べるときにガワが渡す。
   async setSource(
     src: string,
-    meta: { baseDir: string; name: string; changedLines?: Map<number, ChangeAt> }
+    meta: {
+      baseDir: string;
+      name: string;
+      changedLines?: Map<number, ChangeAt>;
+      insertedAt?: Map<number, ChangeAt>;
+    }
   ) {
     this.source = src;
     this.baseDir = meta.baseDir;
     this.name = meta.name;
     this.changedLines = meta.changedLines ?? null;
+    this.insertedAt = meta.insertedAt ?? null;
     this.dirty = false;
     await this.render();
   }
@@ -327,7 +364,10 @@ export class DocumentViewer {
             changedLines: new Map(
               Array.from(this.changedLines, ([n, at]) => [n - fm.offset, at] as const)
             ),
-            // ブロックに持たせる行番号は元テキストのものに戻す
+            insertedAt: this.insertedAt
+              ? new Map(Array.from(this.insertedAt, ([n, at]) => [n - fm.offset, at] as const))
+              : undefined,
+            // 目印に書く行番号は元テキストのものに戻す
             lineOffset: fm.offset,
           }
         : {};
@@ -359,52 +399,109 @@ export class DocumentViewer {
     requestAnimationFrame(() => this.root.classList.add("is-refreshing"));
   }
 
-  /// 変わったところの左に線を引く。
+  /// 変わったところがどこに描かれたか。
   ///
-  /// markdown-it が印を付けたブロック (.ink-changed) の位置を測り、本文の
-  /// 左余白に線を置く。続いているブロックは 1 本にまとめるので、間の余白でも
-  /// 線が途切れない。図の読み込みや幅の変化で位置が動くため、docEl の寸法が
-  /// 変わるたびに引き直す。
+  /// 本文に埋めた目印 (markdown.ts) を拾って、まとまりごとの矩形にする。
+  /// 線を引くのも、左右を結ぶのも、スクロールを合わせるのも、ここから出る。
+  changeSpans(): ChangeSpan[] {
+    const marks = Array.from(this.docEl.querySelectorAll<HTMLElement>("[data-at]"));
+    const out = new Map<number, ChangeSpan>();
+
+    const put = (hunk: number, kind: string, top: number, bottom: number, point: boolean) => {
+      const cur = out.get(hunk);
+      if (!cur) {
+        out.set(hunk, { hunk, kind, top, bottom, point });
+        return;
+      }
+      cur.top = Math.min(cur.top, top);
+      cur.bottom = Math.max(cur.bottom, bottom);
+      if (cur.kind !== kind) cur.kind = "mod";
+    };
+
+    const hunksOf = (el: HTMLElement) =>
+      (el.dataset.at ?? "")
+        .split(",")
+        .map(Number)
+        .filter((n) => Number.isFinite(n));
+
+    // 高さのあるものを先に置く。同じまとまりに点が混ざっても、そちらが勝つ
+    for (const el of marks) {
+      if (el.hasAttribute("data-point")) continue;
+      const kind = el.dataset.kind ?? "mod";
+
+      // 図など、行が画面の行に対応しないもの。ブロック自身が目印なので丸ごと
+      if (!el.classList.contains("ink-at")) {
+        const top = offsetTopIn(el, this.docEl);
+        for (const hunk of hunksOf(el)) put(hunk, kind, top, top + el.offsetHeight, false);
+        continue;
+      }
+
+      // 目印が指している行そのもの。行頭は行の上端、行末は下端に揃えてあるので
+      // (viewer.css)、2 つ合わせればその行の高さになる。折り返していても、
+      // それぞれが別の視覚行に乗るぶん、最小 top と最大 bottom で全体が入る。
+      const y = offsetTopIn(el, this.docEl);
+      for (const hunk of hunksOf(el)) put(hunk, kind, y, y, false);
+    }
+
+    for (const el of marks) {
+      if (!el.hasAttribute("data-point")) continue;
+      const kind = el.dataset.kind ?? "mod";
+      const top = offsetTopIn(el, this.docEl);
+      for (const hunk of hunksOf(el)) if (!out.has(hunk)) put(hunk, kind, top, top, true);
+    }
+
+    return [...out.values()].sort((a, b) => a.top - b.top || a.hunk - b.hunk);
+  }
+
+  /// 線 1 本ぶんのまとまり。
+  ///
+  /// 差分そのものは細かく割れているが、読み手が見ているのは線のまとまりなので、
+  /// 左右を結ぶ帯もスクロールの区切りもこの単位にそろえる。近くても種類 (追加・
+  /// 削除・変更) が違えば色を分ける以上つなげない。
+  changeRuns(): ChangeRun[] {
+    const join = this.joinGap();
+    const runs: ChangeRun[] = [];
+    for (const s of this.changeSpans()) {
+      if (s.point) continue;
+      const last = runs[runs.length - 1];
+      if (last && last.kind === s.kind && s.top - last.bottom <= join) {
+        last.bottom = Math.max(last.bottom, s.bottom);
+        last.hunks.push(s.hunk);
+        continue;
+      }
+      runs.push({ top: s.top, bottom: s.bottom, kind: s.kind, hunks: [s.hunk] });
+    }
+    return runs;
+  }
+
+  /// 相手側だけが増えた位置。その側には線が出ないので、帯の頂点に使う。
+  changePoints(): Map<number, number> {
+    const out = new Map<number, number>();
+    for (const s of this.changeSpans()) if (s.point) out.set(s.hunk, s.top);
+    return out;
+  }
+
+  /// つなぐ間合い。行の高さを基準にする (段落どうしの余白ぶん)
+  private joinGap(): number {
+    return (parseFloat(getComputedStyle(this.docEl).lineHeight) || 24) * 1.6;
+  }
+
+  /// 変わったところの縁に線を引く。
+  ///
+  /// まとまりの出し方は changeRuns に任せる。左右を結ぶ帯もスクロールの
+  /// 区切りも同じものを見るので、線とずれることがない。図の読み込みや幅の
+  /// 変化で位置が動くため、docEl の寸法が変わるたびに引き直す。
   private paintChangeBars() {
     for (const old of Array.from(this.docEl.querySelectorAll(".ink-change-bar"))) {
       old.remove();
     }
-    const blocks = Array.from(this.docEl.querySelectorAll<HTMLElement>(".ink-changed"));
-    if (!blocks.length) return;
-
-    const groups: { top: number; bottom: number; kind: string; joins: boolean }[] = [];
-    let prev: Element | null = null;
-    for (const el of blocks) {
-      const kind = el.dataset.change ?? "mod";
-      const top = el.offsetTop;
-      const bottom = top + el.offsetHeight;
-      const last = groups[groups.length - 1];
-      const adjacent = !!last && el.previousElementSibling === prev;
-      // 隣り合っていて種類も同じなら 1 本につなげる (間の余白ごと埋める)
-      if (adjacent && last.kind === kind) {
-        last.bottom = bottom;
-      } else {
-        groups.push({ top, bottom, kind, joins: adjacent });
-      }
-      prev = el;
-    }
-
-    // 隣り合っているのに種類が違うところ (変更のすぐ下が追加、など) は、
-    // 色を分ける以上 1 本にはできない。境目で継いで、線が途切れないようにする。
-    for (let i = 1; i < groups.length; i++) {
-      if (!groups[i].joins) continue;
-      const mid = Math.round((groups[i - 1].bottom + groups[i].top) / 2);
-      groups[i - 1].bottom = mid;
-      groups[i].top = mid;
-    }
-
-    for (const g of groups) {
+    for (const run of this.changeRuns()) {
       const bar = document.createElement("div");
       bar.className = "ink-change-bar";
-      bar.dataset.change = g.kind;
+      bar.dataset.change = run.kind;
       bar.setAttribute("aria-hidden", "true");
-      bar.style.top = `${g.top}px`;
-      bar.style.height = `${Math.max(0, g.bottom - g.top)}px`;
+      bar.style.top = `${run.top}px`;
+      bar.style.height = `${Math.max(0, run.bottom - run.top)}px`;
       this.docEl.appendChild(bar);
     }
   }
