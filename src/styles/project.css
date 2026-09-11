@@ -570,12 +570,174 @@ body.is-pane-collapsed .ink-tabstrip {
   z-index: 20;
   display: flex;
   flex-direction: column;
-  width: 300px;
-  padding-bottom: 8px;
+  width: 320px;
+  max-height: 70vh;
+  padding-bottom: 4px;
+  overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--surface);
   box-shadow: var(--shadow);
+}
+
+/* 2 つの面 (比較の一覧 / 2 つの地点)。切り替えても窓が飛ばないよう、
+   どちらも同じ器の中で出し入れする */
+.ink-cmp-face {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.ink-cmp-list {
+  padding: 6px 6px 0;
+}
+
+/* ブランチだけがスクロールする。よく使う比較は上に貼り付いたまま */
+.ink-cmp-branches {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 6px 4px;
+}
+
+/* 比較 1 つ。左から 名前 / ローカルの断り / 件数 / 日時 */
+.ink-cmp-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  font-family: var(--sans);
+  font-size: 12px;
+  color: var(--ink);
+  text-align: left;
+  cursor: default;
+}
+
+.ink-cmp-row:hover,
+.ink-cmp-row.is-cursor {
+  background: var(--accent-soft);
+}
+
+.ink-cmp-row.is-on {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.ink-cmp-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ink-cmp-tag {
+  flex: none;
+  font-size: 9.5px;
+  color: var(--ink-2);
+}
+
+/* 変わる md の件数。選ぶ前にどれを見ればよいか分かるように出す。
+   数え終わるまでは空 (0 と紛らわしいため) なので、幅だけ先に取っておく */
+.ink-cmp-count {
+  flex: none;
+  min-width: 1.6em;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  text-align: right;
+  color: var(--ink-2);
+}
+
+.ink-cmp-count.is-zero {
+  opacity: 0.35;
+}
+
+.ink-cmp-when {
+  flex: none;
+  width: 4.6em;
+  font-size: 10px;
+  text-align: right;
+  color: var(--ink-2);
+}
+
+/* ブランチの絞り込み。本数が少ないうちは出さない */
+.ink-cmp-filter {
+  margin: 0 8px 4px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink);
+}
+
+.ink-cmp-filter:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* 「ほかのブランチ」「2 つの地点を選ぶ…」「← 比較の一覧へ」。
+   行そのものではなく、行を増やす / 面を変えるための小さな字 */
+.ink-cmp-more,
+.ink-cmp-manual,
+.ink-cmp-back {
+  margin: 0 6px;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  font-family: var(--sans);
+  font-size: 11px;
+  color: var(--ink-2);
+  text-align: left;
+  cursor: default;
+}
+
+.ink-cmp-manual,
+.ink-cmp-back {
+  margin: 2px 6px 6px;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  padding-top: 7px;
+}
+
+.ink-cmp-back {
+  border-top: none;
+  border-bottom: 1px solid var(--line);
+  margin: 0 6px 6px;
+  padding: 6px 8px;
+}
+
+.ink-cmp-more:hover,
+.ink-cmp-manual:hover,
+.ink-cmp-back:hover {
+  color: var(--accent);
+}
+
+/* 見出しに置く取得ボタン (リモートごと) */
+.ink-cmp-fetch {
+  flex: none;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-family: var(--sans);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--accent);
+  cursor: default;
+}
+
+.ink-cmp-fetch:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.ink-cmp-fetch:disabled {
+  color: var(--ink-2);
 }
 
 /* 候補の一覧。「他…」のボタンに合わせて開く。position: fixed なので、親の

@@ -46,6 +46,8 @@ export type RefEntry = {
   base: string | null;
   baseTime: number | null;
   baseSummary: string | null;
+  /// その ref が指すコミットの日時。新しい順に並べるのに使う
+  time: number | null;
 };
 
 export type GitRefs = {
@@ -94,6 +96,63 @@ export function endpointLabel(e: Endpoint): string {
 
 export type Range = { start: Endpoint; end: Endpoint };
 
+export const gitCounts = (root: string, ranges: Range[]) =>
+  invoke<(number | null)[]>("git_counts", { root, ranges });
+
+/// 何を比べているか。
+///
+/// 端点 2 つではなく「何を見たいか」で持つ。やりたいのは「この PR が持ち込む
+/// 変更を見る」のような 1 つのことで、端点 2 つはその翻訳結果でしかない。翻訳した
+/// 結果のほうを覚えると、枝が消えたときに意図ごと失われる (実際、取り込み済みで
+/// 消えた枝を指したまま固まっていた)。意図で持てば、枝が無くなっても
+/// 「その枝はもうありません」と言って選び直させられる。
+export type Comparison =
+  | { kind: "uncommitted" }
+  | { kind: "staged" }
+  | { kind: "last" }
+  /// 既定ブランチとの分岐点から、そのブランチまで
+  | { kind: "branch"; name: string }
+  /// 端点を自分で指定したもの
+  | { kind: "manual"; start: Endpoint; end: Endpoint };
+
+/// 意図を実際の 2 点に落とす。これより下 (変更の一覧・差分の ID) は今までどおり。
+export function toRange(c: Comparison, base: string | null): Range {
+  const head: Endpoint = { kind: "rev", spec: "HEAD" };
+  switch (c.kind) {
+    case "uncommitted":
+      return { start: head, end: { kind: "worktree" } };
+    case "staged":
+      return { start: head, end: { kind: "index" } };
+    case "last":
+      return { start: { kind: "rev", spec: "HEAD~1" }, end: head };
+    case "branch":
+      // 分岐点が当てられなければ HEAD から。枝そのものは指せるので、
+      // 何も見せられないよりはよい
+      return {
+        start: base ? { kind: "merge-base", spec: base } : head,
+        end: { kind: "rev", spec: c.name },
+      };
+    case "manual":
+      return { start: c.start, end: c.end };
+  }
+}
+
+/// 比較の名前。ペインのボタンに出る。
+export function comparisonLabel(c: Comparison): string {
+  switch (c.kind) {
+    case "uncommitted":
+      return "未コミットの変更";
+    case "staged":
+      return "ステージ済み";
+    case "last":
+      return "直前のコミット";
+    case "branch":
+      return `${c.name} の変更`;
+    case "manual":
+      return `${endpointLabel(c.start)} → ${endpointLabel(c.end)}`;
+  }
+}
+
 const newerFetch = (a: number | null, b: number | null) =>
   a && b ? Math.max(a, b) : (a ?? b);
 
@@ -125,32 +184,46 @@ function saveFetchedAt(root: string, at: number) {
   }
 }
 
-export function loadRange(root: string): Range | null {
+/// 覚えているものを読む。
+///
+/// 端点 2 つで覚えていた頃のものが残っているので、形を見て意図へ引き上げる。
+/// よくある 2 つ (既定ブランチとの分岐点 → 枝 / HEAD → 作業ツリー) は意味が
+/// 決まっているので拾い、それ以外は指定そのものとして抱える。
+export function loadComparison(root: string, base: string | null): Comparison | null {
+  let v: unknown;
   try {
     const raw = localStorage.getItem(rangeKey(root));
-    return raw ? (JSON.parse(raw) as Range) : null;
+    if (!raw) return null;
+    v = JSON.parse(raw);
   } catch {
     return null;
   }
+  if (!v || typeof v !== "object") return null;
+  if ("kind" in v) return v as Comparison;
+
+  const { start, end } = v as Range;
+  if (!start || !end) return null;
+  if (start.kind === "rev" && start.spec === "HEAD") {
+    if (end.kind === "worktree") return { kind: "uncommitted" };
+    if (end.kind === "index") return { kind: "staged" };
+  }
+  if (start.kind === "merge-base" && start.spec === base && end.kind === "rev") {
+    return { kind: "branch", name: end.spec };
+  }
+  return { kind: "manual", start, end };
 }
 
-export function saveRange(root: string, range: Range) {
+export function saveComparison(root: string, c: Comparison) {
   try {
-    localStorage.setItem(rangeKey(root), JSON.stringify(range));
+    localStorage.setItem(rangeKey(root), JSON.stringify(c));
   } catch {
     /* 保存できないだけ。動作には影響しない */
   }
 }
 
-/// 既定は「分岐元から今の作業まで」。分岐元が当てられなければ HEAD からにする。
-export function defaultRange(probe: GitProbe): Range {
-  return {
-    start: probe.defaultBase
-      ? { kind: "merge-base", spec: probe.defaultBase }
-      : { kind: "rev", spec: "HEAD" },
-    end: { kind: "worktree" },
-  };
-}
+/// 既定は「未コミットの変更」。開いてすぐ見たいのはたいていこれで、
+/// 分岐点からの差分を既定にするとフォルダを開くたびに大きな差分を計算することになる。
+export const defaultComparison = (): Comparison => ({ kind: "uncommitted" });
 
 /// git の変更ペイン。
 ///
@@ -160,7 +233,8 @@ export function defaultRange(probe: GitProbe): Range {
 export class GitPane {
   private root: string | null = null;
   private probe: GitProbe | null = null;
-  private range: Range | null = null;
+  /// 何を比べているか。実際の 2 点は toRange で作る
+  private cmp: Comparison | null = null;
   private changes: Change[] = [];
   /// ツリーの色用。範囲とは切り離して常に HEAD → 作業ツリーで取る
   private headChanges: Change[] = [];
@@ -181,8 +255,8 @@ export class GitPane {
     private opts: {
       onOpen: (path: string) => void;
       onNotice: (msg: string) => void;
-      /// 範囲を選び直す。ツリーの色も塗り直したいのでガワに任せる
-      onRange: (range: Range) => void;
+      /// 比較を選び直す。ツリーの色も塗り直したいのでガワに任せる
+      onPick: (c: Comparison) => void;
     }
   ) {
     this.listEl.addEventListener("click", (e) => {
@@ -201,7 +275,7 @@ export class GitPane {
 
   private openMenu(path: string, x: number, y: number) {
     const change = this.changes.find((c) => c.path === path);
-    const range = this.range;
+    const range = this.cmp && this.probe ? toRange(this.cmp, this.probe.defaultBase) : null;
     if (!change || !range) return;
     this.menu.open(
       [
@@ -273,7 +347,7 @@ export class GitPane {
       this.changes = [];
       return;
     }
-    this.range = loadRange(rootPath) ?? defaultRange(this.probe);
+    this.cmp = loadComparison(rootPath, this.probe.defaultBase) ?? defaultComparison();
     await this.refresh();
   }
 
@@ -282,13 +356,11 @@ export class GitPane {
   /// 変更ペインは選んだ範囲、ツリーの色は HEAD からの差分と、基準が違うので
   /// 2 つ取る。範囲が HEAD → 作業ツリーのときは同じものなので 1 回で済ませる。
   async refresh() {
-    if (!this.root || !this.probe || !this.range) return;
-    const isHead =
-      this.range.start.kind === "rev" &&
-      this.range.start.spec === "HEAD" &&
-      this.range.end.kind === "worktree";
+    if (!this.root || !this.probe || !this.cmp) return;
+    const range = toRange(this.cmp, this.probe.defaultBase);
+    const isHead = this.cmp.kind === "uncommitted";
     try {
-      const res = await gitChanges(this.root, this.range.start, this.range.end);
+      const res = await gitChanges(this.root, range.start, range.end);
       this.failure = null;
       this.changes = res.entries;
       this.others = res.others;
@@ -315,15 +387,20 @@ export class GitPane {
     return new Map(this.headChanges.map((c) => [c.path, c.state]));
   }
 
-  async setRange(range: Range) {
+  async setComparison(c: Comparison) {
     if (!this.root) return;
-    this.range = range;
-    saveRange(this.root, range);
+    this.cmp = c;
+    saveComparison(this.root, c);
     await this.refresh();
   }
 
-  get currentRange(): Range | null {
-    return this.range;
+  get comparison(): Comparison | null {
+    return this.cmp;
+  }
+
+  /// 分岐点を計算する相手 (既定ブランチ)。比較を選ぶ側が要る
+  get base(): string | null {
+    return this.probe?.defaultBase ?? null;
   }
 
   get enabled() {
@@ -341,8 +418,8 @@ export class GitPane {
 
   private render() {
     if (!this.probe) return;
-    this.rangeBtn.querySelector(".ink-git-range-label")!.textContent = this.range
-      ? `${endpointLabel(this.range.start)} → ${endpointLabel(this.range.end)}`
+    this.rangeBtn.querySelector(".ink-git-range-label")!.textContent = this.cmp
+      ? comparisonLabel(this.cmp)
       : "";
 
     const rows: HTMLElement[] = [];
@@ -385,10 +462,8 @@ export class GitPane {
       const fix = document.createElement("button");
       fix.type = "button";
       fix.className = "ink-git-fix";
-      fix.textContent = "既定の範囲に戻す";
-      fix.addEventListener("click", () => {
-        if (this.probe) this.opts.onRange(defaultRange(this.probe));
-      });
+      fix.textContent = "未コミットの変更に切り替える";
+      fix.addEventListener("click", () => this.opts.onPick(defaultComparison()));
       this.listEl.replaceChildren(why, fix);
       return;
     }
@@ -467,38 +542,50 @@ const opensUp = (anchor: HTMLElement) => {
   return window.innerHeight - r.bottom < r.top;
 };
 
-/// 比較する範囲を選ぶポップオーバー。
+/// 一覧に出すブランチの数。これを超えるぶんは畳んでおく
+const BRANCHES_SHOWN = 6;
+/// 絞り込みを出す本数。これ以下なら目で足りる
+const FILTER_FROM = 8;
+
+/// 比較を選ぶポップオーバー。
 ///
-/// 「どこまで」と「どこから」は同じ選び方にしてある。それぞれに よく使う 3 つ
-/// (作業ツリー / ステージ済み / HEAD) を並べたボタン列を持たせ、それ以外は
-/// 「他…」から選ぶ。同じ操作なのに片方だけ形が違うと、どちらを触っているのか
-/// 分からなくなる。
+/// 選ばせるのは端点 2 つではなく「何を見たいか」。PR のレビューが主なので、
+/// ブランチを 1 つ選べば「そのブランチの変更」(既定ブランチとの分岐点から
+/// その枝まで) が決まる。端点を自分で指したい人だけが「2 つの地点を選ぶ…」の
+/// 奥へ行く — 端点 2 つは意図の翻訳結果でしかなく、覚えておくと枝が消えたときに
+/// 意図ごと壊れる (Comparison のコメント参照)。
 ///
-/// 先に決めるのは「どこまで」。分岐点 (merge-base) は 2 点で決まるので、
-/// 「どこから」の候補は「どこまで」に依存する。候補は現在の end に対して Rust
-/// 側が計算したものを使う (end に取り込み済みのブランチは分岐点がそのブランチ
-/// 自身になり、そのまま指定したときと同じ結果になるので出さない)。
-///
-/// 候補の一覧は「他…」を押したときだけ、そのボタンの位置に開く。ブランチが
-/// 何十本もある repo では、よく使う 3 つを選ぶだけのときに邪魔になるため。
-/// 一覧の中でも、ローカル・リモート (オリジンごと)・タグは畳んである。絞り込みを
-/// 入れると、当たりのあるまとまりだけが開いて残る。
+/// ブランチはリモートを先に、コミットの新しい順。名前順だと今レビューしている枝が
+/// 埋もれる。右の数はその比較で変わる md の件数で、選ぶ前にどれを見ればよいかが
+/// 分かるように出す (git_counts。遅れて届く)。
 export class RangeMenu {
-  /// 候補の一覧がどちらの側に効くか。「他…」を押した側
-  private side: "start" | "end" = "start";
-  /// 一覧を開いているか
-  private picking = false;
+  /// どちらの面を出しているか
+  private face: "list" | "ends" = "list";
   /// 開くときに位置を合わせる相手 (範囲ボタン) と、開く向き
   private anchor: HTMLElement | null = null;
   private openUp = false;
-  private pickerUp = false;
+  private cursor = -1;
   private refs: RefEntry[] = [];
   private fetchedAt: number | null = null;
-  /// 「どこまで」が解決できない (消えたブランチを指している)
-  private endMissing = false;
-  private cursor = -1;
   /// 取得の実行中のオリジン。ボタンの見た目と二重起動の防止に使う
   private fetching: string | null = null;
+
+  // ---------- 比較の一覧 ----------
+  /// 比較 → 変わる md の件数。null は数えられなかったもの (消えた枝など)
+  private counts = new Map<string, number | null>();
+  /// 数は遅れて届くので、古い返事で上書きしないよう世代を見る
+  private countSeq = 0;
+  private branchFilter = "";
+  /// ほかのブランチまで開いているか
+  private allBranches = false;
+
+  // ---------- 2 つの地点の面 ----------
+  /// 候補の一覧がどちらの側に効くか。「他…」を押した側
+  private side: "start" | "end" = "start";
+  private picking = false;
+  private pickerUp = false;
+  /// 「どこまで」が解決できない (消えたブランチを指している)
+  private endMissing = false;
   /// 開いているまとまり。開き直せば畳んだ状態から始める
   private unfolded = new Set<string>();
 
@@ -506,38 +593,51 @@ export class RangeMenu {
     private panel: HTMLElement,
     private opts: {
       getRoot: () => string | null;
-      getRange: () => Range | null;
-      onPick: (range: Range) => void;
+      getComparison: () => Comparison | null;
+      getBase: () => string | null;
+      onPick: (c: Comparison) => void;
+      /// 選び終わったので閉じてほしい。閉じるのはガワの持ち物 (PopoverGroup)
+      onDone: () => void;
       onFetched: () => void;
       onNotice: (msg: string) => void;
     }
   ) {
     this.panel.addEventListener("click", (e) => {
-      const btn = (e.target as HTMLElement).closest<HTMLElement>(".ink-grm-end");
-      if (!btn) return;
-      const side = btn.closest<HTMLElement>("[data-side]")?.dataset.side === "end" ? "end" : "start";
-      if (btn.dataset.ep) {
-        // よく使う 3 つはその場で決まる。一覧を出す用は無い
-        this.closePicker();
-        void this.put(side, JSON.parse(btn.dataset.ep) as Endpoint);
-        return;
+      const target = e.target as HTMLElement;
+
+      if (target.closest(".ink-cmp-manual")) return this.showFace("ends");
+      if (target.closest(".ink-cmp-back")) return this.showFace("list");
+
+      const fetch = target.closest<HTMLElement>(".ink-cmp-fetch, .ink-grm-fetch");
+      if (fetch) return void this.runFetch(fetch.dataset.remote ?? "");
+
+      const more = target.closest<HTMLElement>(".ink-cmp-more");
+      if (more) {
+        this.allBranches = !this.allBranches;
+        this.cursor = -1;
+        return this.render();
       }
-      // 「他…」— そのボタンの位置に候補を開く。開いている側をもう一度押したら閉じる
-      if (this.picking && this.side === side) this.closePicker();
-      else this.openPicker(side);
+
+      const row = target.closest<HTMLElement>(".ink-cmp-row");
+      if (row) return this.take(JSON.parse(row.dataset.cmp!) as Comparison);
+
+      const end = target.closest<HTMLElement>(".ink-grm-end");
+      if (end) return this.clickEnd(end);
     });
+
+    this.panel.addEventListener("keydown", (e) => this.handleKey(e));
     this.filterEl.addEventListener("input", () => {
       this.cursor = -1;
       this.render();
     });
-    this.filterEl.addEventListener("keydown", (e) => this.handleKey(e));
+    this.branchFilterEl.addEventListener("input", () => {
+      this.branchFilter = this.branchFilterEl.value;
+      this.cursor = -1;
+      this.render();
+    });
+
     this.listEl.addEventListener("click", (e) => {
       const target = e.target as HTMLElement;
-      const fetch = target.closest<HTMLElement>(".ink-grm-fetch");
-      if (fetch) {
-        void this.runFetch(fetch.dataset.remote ?? "");
-        return;
-      }
       const fold = target.closest<HTMLElement>(".ink-grm-fold");
       if (fold) {
         const key = fold.dataset.key!;
@@ -552,6 +652,47 @@ export class RangeMenu {
     });
   }
 
+  /// ボタンの位置に合わせて開く。候補は開くたびに取り直す
+  /// (ブランチは外で動くし、end が変われば分岐点も変わるため)。
+  async opened(anchor: HTMLElement) {
+    this.anchor = anchor;
+    this.openUp = opensUp(anchor);
+    this.face = "list";
+    this.side = "start";
+    this.picking = false;
+    this.allBranches = false;
+    this.branchFilter = "";
+    this.branchFilterEl.value = "";
+    this.pickerEl.classList.add("hidden");
+    this.filterEl.value = "";
+    this.cursor = -1;
+    this.unfolded.clear();
+    this.render();
+    await this.reload();
+  }
+
+  // ---------- 内部 ----------
+
+  private get cmpFaceEl() {
+    return this.panel.querySelector<HTMLElement>(".ink-cmp-face:not(.ink-cmp-ends)")!;
+  }
+
+  private get endsFaceEl() {
+    return this.panel.querySelector<HTMLElement>(".ink-cmp-ends")!;
+  }
+
+  private get cmpListEl() {
+    return this.panel.querySelector<HTMLElement>(".ink-cmp-list")!;
+  }
+
+  private get branchFilterEl() {
+    return this.panel.querySelector<HTMLInputElement>(".ink-cmp-filter")!;
+  }
+
+  private get branchesEl() {
+    return this.panel.querySelector<HTMLElement>(".ink-cmp-branches")!;
+  }
+
   private get pickerEl() {
     return this.panel.querySelector<HTMLElement>(".ink-grm-picker")!;
   }
@@ -564,29 +705,203 @@ export class RangeMenu {
     return this.panel.querySelector<HTMLElement>(".ink-grm-list")!;
   }
 
+  private showFace(face: "list" | "ends") {
+    this.closePicker();
+    this.face = face;
+    this.cursor = -1;
+    this.render();
+  }
+
+  /// 比較を決める。1 行 = 1 つの意図なので、選んだ時点で用は済んでいる。
+  /// 端点を 1 つずつ指す面 (put) とは違い、ここは選んだら閉じる。
+  private take(c: Comparison) {
+    this.opts.onPick(c);
+    this.opts.onDone();
+  }
+
+  /// 一覧に出す比較。上から順にそのまま並ぶ。
+  private rowsOf(): { cmp: Comparison; label: string; note?: string; tag?: string }[] {
+    const out: { cmp: Comparison; label: string; note?: string; tag?: string }[] = [];
+    out.push({ cmp: { kind: "uncommitted" }, label: "未コミットの変更" });
+    out.push({ cmp: { kind: "staged" }, label: "ステージ済み" });
+    out.push({ cmp: { kind: "last" }, label: "直前のコミット" });
+    return out;
+  }
+
+  /// ブランチの行。リモートを先に、コミットの新しい順。
+  ///
+  /// 名前順だと、いまレビューしている枝が下のほうに埋もれる。新しい順なら
+  /// たいてい先頭付近に出る。
+  private branchRows() {
+    const q = this.branchFilter.trim().toLowerCase();
+    const rank = (r: RefEntry) => (r.kind === "remote" ? 0 : 1);
+    return this.refs
+      .filter((r) => r.kind === "branch" || r.kind === "remote")
+      .filter((r) => !q || r.name.toLowerCase().includes(q))
+      .sort((a, b) => rank(a) - rank(b) || (b.time ?? 0) - (a.time ?? 0))
+      .map((r) => ({
+        cmp: { kind: "branch", name: r.name } as Comparison,
+        label: r.name,
+        note: r.time ? relTime(r.time) : "",
+        tag: r.kind === "branch" ? "ローカル" : "",
+      }));
+  }
+
+  /// リモートの名前 (取得の単位)。参照が無くても既定のリモート向けに出す。
+  private remotes(): string[] {
+    const out = new Set<string>();
+    for (const r of this.refs) {
+      if (r.kind !== "remote") continue;
+      out.add(r.name.slice(0, Math.max(0, r.name.indexOf("/"))));
+    }
+    return out.size ? [...out].sort() : [""];
+  }
+
+  private renderList() {
+    const cur = this.opts.getComparison();
+    const curKey = cur ? JSON.stringify(cur) : "";
+    const nodes: HTMLElement[] = [];
+
+    const row = (r: { cmp: Comparison; label: string; note?: string; tag?: string }) => {
+      const el = document.createElement("button");
+      el.type = "button";
+      el.className = "ink-cmp-row";
+      el.dataset.cmp = JSON.stringify(r.cmp);
+      el.setAttribute("role", "option");
+      if (JSON.stringify(r.cmp) === curKey) el.classList.add("is-on");
+
+      const name = document.createElement("span");
+      name.className = "ink-cmp-name";
+      name.textContent = r.label;
+      el.append(name);
+
+      if (r.tag) {
+        const tag = document.createElement("span");
+        tag.className = "ink-cmp-tag";
+        tag.textContent = r.tag;
+        el.append(tag);
+      }
+
+      // 数は遅れて届く。届くまでは何も出さない (0 と紛らわしいので)
+      const n = this.counts.get(JSON.stringify(r.cmp));
+      const count = document.createElement("span");
+      count.className = "ink-cmp-count";
+      if (n !== undefined && n !== null) {
+        count.textContent = String(n);
+        if (n === 0) count.classList.add("is-zero");
+      }
+      el.append(count);
+
+      if (r.note) {
+        const note = document.createElement("span");
+        note.className = "ink-cmp-when";
+        note.textContent = r.note;
+        el.append(note);
+      }
+      return el;
+    };
+
+    for (const r of this.rowsOf()) nodes.push(row(r));
+
+    // ブランチ
+    const head = document.createElement("p");
+    head.className = "ink-grm-head";
+    const label = document.createElement("span");
+    label.textContent = "ブランチの変更";
+    head.append(label);
+    if (this.fetchedAt) {
+      const when = document.createElement("span");
+      when.className = "ink-grm-when";
+      when.textContent = `${relTime(this.fetchedAt)}に取得`;
+      head.append(when);
+    }
+    for (const remote of this.remotes()) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "ink-cmp-fetch";
+      btn.dataset.remote = remote;
+      btn.textContent = this.fetching === remote ? "取得中…" : remote ? `取得 ${remote}` : "取得";
+      btn.disabled = this.fetching !== null;
+      head.append(btn);
+    }
+    nodes.push(head);
+
+    this.cmpListEl.replaceChildren(...nodes);
+
+    // ブランチは別の器へ。ここだけがスクロールする (よく使う比較は常に見える)
+    const branches = this.branchRows();
+    const many = branches.length > FILTER_FROM;
+    this.branchFilterEl.classList.toggle("hidden", !many && !this.branchFilter);
+    const shown = this.allBranches || this.branchFilter ? branches : branches.slice(0, BRANCHES_SHOWN);
+    const below: HTMLElement[] = shown.map(row);
+
+    const rest = branches.length - shown.length;
+    if (rest > 0 || this.allBranches) {
+      const more = document.createElement("button");
+      more.type = "button";
+      more.className = "ink-cmp-more";
+      more.textContent = this.allBranches ? "▾ 少なく" : `▸ ほかのブランチ ${rest}`;
+      below.push(more);
+    }
+    if (!branches.length) {
+      const empty = document.createElement("p");
+      empty.className = "ink-git-empty";
+      empty.textContent = this.branchFilter ? "見つかりません" : "ブランチがありません";
+      below.push(empty);
+    }
+    this.branchesEl.replaceChildren(...below);
+
+    void this.fillCounts([...this.rowsOf(), ...shown].map((r) => r.cmp));
+  }
+
+  /// 一覧に出ているぶんの件数を数えて埋める。
+  ///
+  /// 1 つずつ問い合わせると往復が増えるので、見えている行をまとめて 1 回。
+  /// 遅れて届くので、その間に一覧が変わっていたら捨てる。
+  private async fillCounts(cmps: Comparison[]) {
+    const root = this.opts.getRoot();
+    const base = this.opts.getBase();
+    if (!root) return;
+    const want = cmps.filter((c) => !this.counts.has(JSON.stringify(c)));
+    if (!want.length) return;
+    const seq = ++this.countSeq;
+    try {
+      const got = await gitCounts(root, want.map((c) => toRange(c, base)));
+      if (seq !== this.countSeq) return;
+      want.forEach((c, i) => this.counts.set(JSON.stringify(c), got[i] ?? null));
+      if (this.face === "list") this.renderList();
+    } catch {
+      /* 数が出ないだけ。選ぶのに支障はない */
+    }
+  }
+
+  // ---------- 2 つの地点の面 ----------
+
+  /// いま効いている 2 点。意図で選んでいても、端点の面ではその翻訳結果を見せる。
+  private effective(): Range | null {
+    const c = this.opts.getComparison();
+    return c ? toRange(c, this.opts.getBase()) : null;
+  }
+
+  private clickEnd(btn: HTMLElement) {
+    const side = btn.closest<HTMLElement>("[data-side]")?.dataset.side === "end" ? "end" : "start";
+    if (btn.dataset.ep) {
+      // よく使う 3 つはその場で決まる。一覧を出す用は無い
+      this.closePicker();
+      void this.put(side, JSON.parse(btn.dataset.ep) as Endpoint);
+      return;
+    }
+    // 「他…」— そのボタンの位置に候補を開く。開いている側をもう一度押したら閉じる
+    if (this.picking && this.side === side) this.closePicker();
+    else this.openPicker(side);
+  }
+
   /// 「他…」のボタン。一覧はここに合わせて開く
   private otherBtn(side: "start" | "end") {
     return this.panel.querySelector<HTMLElement>(
       `.ink-grm-ends[data-side="${side}"] .ink-grm-end:last-child`
     );
   }
-
-  /// ボタンの位置に合わせて開く。候補は開くたびに取り直す
-  /// (ブランチは外で動くし、end が変われば分岐点も変わるため)。
-  async opened(anchor: HTMLElement) {
-    this.anchor = anchor;
-    this.openUp = opensUp(anchor);
-    this.side = "start";
-    this.picking = false;
-    this.pickerEl.classList.add("hidden");
-    this.filterEl.value = "";
-    this.cursor = -1;
-    this.unfolded.clear();
-    this.render();
-    await this.reload();
-  }
-
-  // ---------- 内部 ----------
 
   private openPicker(side: "start" | "end") {
     this.side = side;
@@ -609,6 +924,16 @@ export class RangeMenu {
     // 抱えたままにしておく意味がない
     this.listEl.replaceChildren();
     this.render();
+  }
+
+  /// 端点を 1 つ差し替える。端点をいじった時点で「自分で指した比較」になる。
+  private async put(side: "start" | "end", ep: Endpoint) {
+    const cur = this.effective();
+    if (!cur) return;
+    const next = side === "start" ? { ...cur, start: ep } : { ...cur, end: ep };
+    this.opts.onPick({ kind: "manual", start: next.start, end: next.end });
+    if (side === "end") await this.reload();
+    else this.render();
   }
 
   /// 候補のまとまり。
@@ -657,7 +982,6 @@ export class RangeMenu {
       if (!remotes.has(name)) remotes.set(name, []);
       if (hit(r.name)) remotes.get(name)!.push(plain(r));
     }
-    // 参照が 1 本も無くても見出しは出す。でないと取得を押す場所が無くなる
     if (!remotes.size) remotes.set("", []);
     for (const [name, items] of [...remotes].sort((a, b) => a[0].localeCompare(b[0]))) {
       if (q && !items.length) continue;
@@ -681,7 +1005,7 @@ export class RangeMenu {
   private renderEnds(side: "start" | "end") {
     const host = this.panel.querySelector<HTMLElement>(`.ink-grm-ends[data-side="${side}"]`);
     if (!host) return;
-    const range = this.opts.getRange();
+    const range = this.effective();
     const cur = range ? (side === "start" ? range.start : range.end) : null;
     const key = cur ? JSON.stringify(cur) : "";
     const fixed: { label: string; ep: Endpoint }[] = [
@@ -713,30 +1037,11 @@ export class RangeMenu {
     host.replaceChildren(...nodes);
   }
 
-  /// 端点を決める。end を変えると分岐点も変わるので候補を取り直す。
-  private async put(side: "start" | "end", ep: Endpoint) {
-    const range = this.opts.getRange();
-    if (!range) return;
-    this.opts.onPick(side === "start" ? { ...range, start: ep } : { ...range, end: ep });
-    if (side === "end") await this.reload();
-    else this.render();
-  }
-
-  private render() {
-    this.renderEnds("end");
-    this.renderEnds("start");
-    if (this.picking) this.renderList();
-    if (this.anchor) place(this.panel, this.anchor, this.openUp);
-    // 一覧は「他…」に合わせる。ボタンは組み直したばかりなので取り直す
-    const btn = this.picking ? this.otherBtn(this.side) : null;
-    if (btn) place(this.pickerEl, btn, this.pickerUp);
-  }
-
-  private renderList() {
+  private renderPicker() {
     this.filterEl.placeholder =
       this.side === "end" ? "どこまで を絞り込み / HEAD~3 など" : "どこから を絞り込み / HEAD~3 など";
 
-    const range = this.opts.getRange();
+    const range = this.effective();
     const current = range ? (this.side === "start" ? range.start : range.end) : null;
     const currentKey = current ? JSON.stringify(current) : "";
     const filtering = !!this.filterEl.value.trim();
@@ -774,7 +1079,6 @@ export class RangeMenu {
         head.append(note);
       }
       if (group.remote !== undefined) {
-        // 取り込みは待たされるし失敗もするので、ペインの ⟳ とは分けてある
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = "ink-grm-fetch";
@@ -822,11 +1126,31 @@ export class RangeMenu {
       nodes.push(empty);
     }
     this.listEl.replaceChildren(...nodes);
-    this.paintCursor();
   }
 
+  // ---------- 描く・動かす ----------
+
+  private render() {
+    this.cmpFaceEl.classList.toggle("hidden", this.face !== "list");
+    this.endsFaceEl.classList.toggle("hidden", this.face !== "ends");
+    if (this.face === "list") this.renderList();
+    else {
+      this.renderEnds("end");
+      this.renderEnds("start");
+    }
+    if (this.picking) this.renderPicker();
+    this.paintCursor();
+    if (this.anchor) place(this.panel, this.anchor, this.openUp);
+    // 一覧は「他…」に合わせる。ボタンは組み直したばかりなので取り直す
+    const btn = this.picking ? this.otherBtn(this.side) : null;
+    if (btn) place(this.pickerEl, btn, this.pickerUp);
+  }
+
+  /// ↑↓ の対象。開いている面のものだけ
   private get rows() {
-    return Array.from(this.listEl.querySelectorAll<HTMLElement>(".ink-grm-row"));
+    const sel = this.picking ? ".ink-grm-row" : this.face === "list" ? ".ink-cmp-row" : "";
+    if (!sel) return [];
+    return Array.from(this.panel.querySelectorAll<HTMLElement>(sel));
   }
 
   private paintCursor() {
@@ -839,16 +1163,19 @@ export class RangeMenu {
   private handleKey(e: KeyboardEvent) {
     const rows = this.rows;
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      if (!rows.length) return;
       e.preventDefault();
       const d = e.key === "ArrowDown" ? 1 : -1;
       this.cursor = Math.max(0, Math.min(rows.length - 1, this.cursor + d));
       this.paintCursor();
     } else if (e.key === "Enter") {
-      e.preventDefault();
       const row = rows[this.cursor] ?? rows[0];
-      if (row) this.pick(row);
-    } else if (e.key === "Escape") {
-      // 閉じるのは候補だけ。ここで止めないと範囲メニューごと閉じる
+      if (!row) return;
+      e.preventDefault();
+      if (this.picking) this.pick(row);
+      else this.take(JSON.parse(row.dataset.cmp!) as Comparison);
+    } else if (e.key === "Escape" && this.picking) {
+      // 閉じるのは候補だけ。ここで止めないと比較のメニューごと閉じる
       e.stopPropagation();
       e.preventDefault();
       this.closePicker();
@@ -871,6 +1198,8 @@ export class RangeMenu {
       await gitFetch(root, remote);
       saveFetchedAt(root, Date.now());
       this.fetching = null;
+      // 取り込むと枝が動くので、数えたものは当てにならない
+      this.counts.clear();
       await this.reload();
       // 取り込みで分岐点が動くことがあるので、変更ペインも取り直す
       this.opts.onFetched();
@@ -883,7 +1212,7 @@ export class RangeMenu {
 
   private async reload() {
     const root = this.opts.getRoot();
-    const range = this.opts.getRange();
+    const range = this.effective();
     if (!root || !range) return;
     try {
       const res = await gitRefs(root, range.end);

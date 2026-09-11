@@ -30,7 +30,7 @@ import { DocTab } from "./tab";
 import { TreePane } from "./tree";
 import { GitPane, RangeMenu } from "./git";
 import { isVirtual } from "../shared/rev";
-import type { Range as GitRange } from "./git";
+import type { Comparison } from "./git";
 import { TabStrip, type TabView } from "./tabs";
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
@@ -93,7 +93,7 @@ export class ProjectShell {
       {
         onOpen: (p) => void this.openPath(p),
         onNotice: (m) => this.toast.show(m),
-        onRange: (r) => void this.setGitRange(r),
+        onPick: (c) => void this.setComparison(c),
       }
     );
 
@@ -278,8 +278,10 @@ export class ProjectShell {
     const rangePanel = $(".ink-git-range-menu");
     this.rangeMenu = new RangeMenu(rangePanel, {
       getRoot: () => this.root || null,
-      getRange: () => this.git.currentRange,
-      onPick: (r) => void this.setGitRange(r),
+      getComparison: () => this.git.comparison,
+      getBase: () => this.git.base,
+      onPick: (c) => void this.setComparison(c),
+      onDone: () => this.popovers.close(rangePopover),
       onFetched: () => void this.refreshGit(),
       onNotice: (m) => this.toast.show(m),
     });
@@ -291,8 +293,8 @@ export class ProjectShell {
     rangeBtn.addEventListener("click", () => this.popovers.toggle(rangePopover));
   }
 
-  private async setGitRange(range: GitRange) {
-    await this.git.setRange(range);
+  private async setComparison(c: Comparison) {
+    await this.git.setComparison(c);
     // 範囲を変えてもツリーの基準 (HEAD) は変わらないが、取り直したので塗り直す
     this.tree.markGit(this.git.headStates);
   }
