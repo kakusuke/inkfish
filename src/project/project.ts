@@ -29,7 +29,7 @@ import { shortenPath } from "../shared/paths";
 import { DocTab } from "./tab";
 import { TreePane } from "./tree";
 import { GitPane, RangeMenu } from "./git";
-import { isRev, isVirtual } from "../shared/rev";
+import { isVirtual } from "../shared/rev";
 import type { Range as GitRange } from "./git";
 import { TabStrip, type TabView } from "./tabs";
 
@@ -194,6 +194,8 @@ export class ProjectShell {
     $('[data-act="open"]').addEventListener("click", () => void this.pickFile());
     $('[data-act="open-dir"]').addEventListener("click", () => void this.pickDir());
     $('[data-act="edit"]').addEventListener("click", () => void this.editActive());
+    $('[data-act="diff-prev"]').addEventListener("click", () => this.active?.sync?.jump(-1));
+    $('[data-act="diff-next"]').addEventListener("click", () => this.active?.sync?.jump(1));
     $('[data-act="refresh-tree"]').addEventListener("click", () => void this.tree.refresh());
   }
 
@@ -576,9 +578,14 @@ export class ProjectShell {
     }));
     this.strip.render(views, this.activeId);
     this.emptyEl.classList.toggle("hidden", this.tabs.length > 0);
-    // 起点版は実ファイルが無いのでエディタでは開けない
-    const editable = !!this.active && !isRev(this.active.path);
+    // 起点版も差分も実ファイルが無いのでエディタでは開けない
+    const editable = !!this.active && !isVirtual(this.active.path);
     $('[data-act="edit"]').classList.toggle("hidden", !editable);
+    // 変わったところを渡り歩くのは、左右に並べているときだけ
+    const walkable = !!this.active?.sync;
+    for (const act of ["diff-prev", "diff-next"]) {
+      $(`[data-act="${act}"]`).classList.toggle("hidden", !walkable);
+    }
     const openPaths = this.tabs.map((t) => t.path);
     this.tree.markOpen(openPaths, this.active?.path ?? null);
     this.git.markOpen(openPaths, this.active?.path ?? null);

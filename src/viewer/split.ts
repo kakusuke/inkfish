@@ -353,6 +353,9 @@ export function keepSynced(
   let tPts: number[] = [0, 0];
   let bPts: number[] = [0, 0];
   let aPts: number[] = [0, 0];
+  /// 変わったところの頭にあたる対応点 (外枠の位置)。↓↑ の行き先はここだけ。
+  /// 尻にも対応点はあるが、そこにも止まると 1 つの差分に 2 回ぶつかる。
+  let stops: number[] = [];
 
   let bMax = 0;
   let aMax = 0;
@@ -443,7 +446,9 @@ export function keepSynced(
 
     bPts = [0];
     aPts = [0];
-    const push = (bv: number, av: number) => {
+    // 積んだ対応点が「変わったところの頭」かどうか。tPts と添字を揃える
+    const isTop: boolean[] = [false];
+    const push = (bv: number, av: number, top: boolean) => {
       // 補間できるよう、どちらも前の点より後ろに進むものだけを採る
       if (bv < bPts[bPts.length - 1] || av < aPts[aPts.length - 1]) return;
       if (bv > bBody || av > aBody) return;
@@ -451,6 +456,7 @@ export function keepSynced(
       if (bv === bPts[bPts.length - 1] && av === aPts[aPts.length - 1]) return;
       bPts.push(bv);
       aPts.push(av);
+      isTop.push(top);
     };
 
     // 対応点は帯の頭と尻。片側が点の帯 (まるごとの追加・削除) では、その側の
@@ -459,17 +465,17 @@ export function keepSynced(
     // 左右が同じだけ進み、短いほうは中身が尽きて空白になる。
     const points = bands.flatMap((b, i) =>
       i >= openFrom
-        ? [{ b: b.bTop, a: b.aTop }]
+        ? [{ b: b.bTop, a: b.aTop, top: true }]
         : [
-            { b: b.bTop, a: b.aTop },
-            { b: b.bBottom, a: b.aBottom },
+            { b: b.bTop, a: b.aTop, top: true },
+            { b: b.bBottom, a: b.aBottom, top: false },
           ]
     );
 
     // 左右それぞれで前へ進む順に並べてから積む (両側を別々に回しているので、
     // そのままでは順序が入れ替わり、補間が壊れる)
     points.sort((x, y) => x.b - y.b || x.a - y.a);
-    for (const p of points) push(p.b, p.a);
+    for (const p of points) push(p.b, p.a, p.top);
 
     // 最後の対応点から下に残っている量を、左右で揃える。短いほうに足した
     // 逃げは本文の外に置くので、紙の丈は中身なりのまま。
@@ -485,9 +491,12 @@ export function keepSynced(
 
     bPts.push(bTotal);
     aPts.push(aTotal);
+    isTop.push(false);
     if (bPts.length < 3) {
       bPts = [0, bTotal];
       aPts = [0, aTotal];
+      isTop.length = 0;
+      isTop.push(false, false);
     }
 
     // 外枠は「区間ごとに長い方」の積み上げ。こうするとどちらの中身も
@@ -498,6 +507,7 @@ export function keepSynced(
       tPts.push(tPts[i - 1] + span);
     }
     track.style.height = `${tPts[tPts.length - 1]}px`;
+    stops = tPts.filter((_, i) => isTop[i]);
 
     if (scroller.scrollTop !== keep) scroller.scrollTop = keep;
     apply();
@@ -524,8 +534,7 @@ export function keepSynced(
 
   return {
     jump(dir) {
-      // 行き先は変わったまとまりの頭。両端 (先頭と末尾) は外す
-      const stops = tPts.slice(1, -1);
+      // 行き先は変わったまとまりの頭 (rebuild で選り分けてある)
       const cur = scroller.scrollTop;
       const next =
         dir > 0 ? stops.find((t) => t > cur + 4) : [...stops].reverse().find((t) => t < cur - 4);

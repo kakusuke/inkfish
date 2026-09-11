@@ -159,6 +159,8 @@ export class AppShell {
     onAct("empty-open", () => void this.pickFile());
     onAct("open-dir", () => void this.pickDir());
     onAct("edit", () => void this.editCurrent());
+    onAct("diff-prev", () => this.sync?.jump(-1));
+    onAct("diff-next", () => this.sync?.jump(1));
   }
 
   private wireBackend() {
@@ -336,6 +338,7 @@ export class AppShell {
     this.toolbar.showCapsule();
     // 起点版 (rev:/…) は実ファイルが無いのでエディタでは開けない
     $('[data-act="edit"]').classList.toggle("hidden", isRev(path));
+    this.showDiffWalk(false);
     // 起点版は「最近開いたファイル」には積まない (実体が無く、開き直せないため)
     if (!isRev(path)) pushRecent(path, this.currentName);
     // 「同じファイルは同じウィンドウ」の台帳に先に載せる。front matter の
@@ -382,8 +385,16 @@ export class AppShell {
     this.emptyEl.classList.add("hidden");
     this.toolbar.showCapsule();
     $('[data-act="edit"]').classList.add("hidden");
+    this.showDiffWalk(true);
     setWindowTabs([{ path, caption: this.currentName }], 0).catch(() => {});
     this.toolbar.setMarpMode(false);
+  }
+
+  /// 変わったところを渡り歩くボタン。左右に並べているときだけ出す。
+  private showDiffWalk(on: boolean) {
+    for (const act of ["diff-prev", "diff-next"]) {
+      $(`[data-act="${act}"]`).classList.toggle("hidden", !on);
+    }
   }
 
   private async reload(retry = true) {
