@@ -568,10 +568,23 @@ pub async fn git_refs(root: String, end: Endpoint) -> Result<GitRefs, String> {
 
 // ---------- 起点版のファイル ----------
 
+/// リポジトリを探し始める場所。実在する最初の親フォルダ。
+///
+/// 起点版にしか無いファイルは、その親フォルダも作業ツリーに無いことがある
+/// (枝がフォルダごと足した場合)。無いフォルダからは repo を探せないので、
+/// 実在するところまで遡る。
+fn nearest_dir(path: &Path) -> Option<&Path> {
+    let mut cur = path.parent()?;
+    while !cur.is_dir() {
+        cur = cur.parent()?;
+    }
+    Some(cur)
+}
+
 /// その地点でのファイルの中身。path は絶対パスで、そこからリポジトリを探す。
 /// 画像も読むのでバイト列で返す (テキストに限らない)。
 pub(crate) fn blob_at(rev: &str, path: &Path) -> Result<Vec<u8>, String> {
-    let dir = path.parent().ok_or_else(|| "パスが不正です".to_string())?;
+    let dir = nearest_dir(path).ok_or_else(|| "パスが不正です".to_string())?;
     let repo = gix::discover(dir).map_err(|e| e.to_string())?;
     let workdir = repo
         .workdir()
