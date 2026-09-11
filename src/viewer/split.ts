@@ -421,14 +421,25 @@ export function keepSynced(
       openFrom--;
     }
 
-    // 帯の端は本文の縁 — 差分の線が出ているところ。線は縁に 1px 重ねて
-    // 幅 4px なので、その外側から出す
+    // 帯の端は本文の縁 — 差分の線が出ているところ。線は紙の枠に重ねて置いて
+    // あるので (viewer.css の left/right: -1px)、外の端は紙の外枠にぴたりと
+    // 揃う。そこから出せば線から素直に伸びる。
+    //
+    // 縦は逆に内枠が起点。線は紙の中に置く要素なので、その位置は内枠から
+    // 数えた値になる (changeSpans も同じ)。offsetIn が返すのは外枠なので、
+    // 枠の太さ (clientTop) を足さないと帯だけ 1px 上にずれる。
+    //
+    // 横だけは矩形で測る。offsetLeft / offsetWidth は整数に丸めた値なので、
+    // 紙の幅が半端なところに来ると 0.5px ずれて髪の毛ほどの隙間が残る。
+    // ずらしているのは縦だけなので、横は矩形で測っても transform の影響を
+    // 受けない (縦は受けるので offsetIn のまま)。
     const bo = offsetIn(before.contentEl, viewport);
     const ao = offsetIn(after.contentEl, viewport);
-    x0 = bo.x + before.contentEl.offsetWidth + 3;
-    x1 = ao.x - 1;
-    bY = bo.y;
-    aY = ao.y;
+    const vx = viewport.getBoundingClientRect().left;
+    x0 = before.contentEl.getBoundingClientRect().right - vx;
+    x1 = after.contentEl.getBoundingClientRect().left - vx;
+    bY = bo.y + before.contentEl.clientTop;
+    aY = ao.y + after.contentEl.clientTop;
 
     bPts = [0];
     aPts = [0];
