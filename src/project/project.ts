@@ -93,6 +93,7 @@ export class ProjectShell {
       {
         onOpen: (p) => void this.openPath(p),
         onNotice: (m) => this.toast.show(m),
+        onRange: (r) => void this.setGitRange(r),
       }
     );
 

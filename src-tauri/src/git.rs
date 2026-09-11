@@ -286,12 +286,17 @@ pub async fn git_changes(
             .to_path_buf();
         let head = || repo.head_id().map(|i| i.detach()).map_err(|e| e.to_string());
 
+        // 解決できないときは、どちら側の指定が悪いのかを添える。消えたブランチを
+        // 指したまま保存されていることがあり、ただ「解決できません」とだけ出ても
+        // 直しようが分からない。
+        let side = |which: &str, e: String| format!("{which}が{e}");
+
         // end 側のコミット。start に分岐点を指定されたときの相手にもなる
         let end_commit = match &end {
             Endpoint::Worktree | Endpoint::Index => head()?,
-            Endpoint::Rev { spec } => rev(&repo, spec)?,
+            Endpoint::Rev { spec } => rev(&repo, spec).map_err(|e| side("変更後", e))?,
             Endpoint::MergeBase { spec } => {
-                let x = rev(&repo, spec)?;
+                let x = rev(&repo, spec).map_err(|e| side("変更後", e))?;
                 repo.merge_base(x, head()?)
                     .map_err(|e| e.to_string())?
                     .detach()
@@ -311,9 +316,9 @@ pub async fn git_changes(
             }
             (s, e) => {
                 let start_commit = match s {
-                    Endpoint::Rev { spec } => rev(&repo, spec)?,
+                    Endpoint::Rev { spec } => rev(&repo, spec).map_err(|e| side("変更前", e))?,
                     Endpoint::MergeBase { spec } => {
-                        let x = rev(&repo, spec)?;
+                        let x = rev(&repo, spec).map_err(|e| side("変更前", e))?;
                         repo.merge_base(x, end_commit)
                             .map_err(|e| e.to_string())?
                             .detach()
@@ -402,6 +407,10 @@ pub struct GitRefs {
     entries: Vec<RefEntry>,
     /// 最後に fetch した時刻。リモートの見出しに出す
     fetched_at: Option<u64>,
+    /// end が解決できなかった (消えたブランチを指しているなど)。
+    /// そのときも一覧は返す — 選び直せないと手の打ちようがなくなるため。
+    /// 分岐点は HEAD を相手に計算してある。
+    end_missing: bool,
 }
 
 /// end に対する候補の一覧。end が決まらないと分岐点が定まらないので end を受け取る。
@@ -410,15 +419,22 @@ pub async fn git_refs(root: String, end: Endpoint) -> Result<GitRefs, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let repo = open(&root)?;
         let head = || repo.head_id().map(|i| i.detach()).map_err(|e| e.to_string());
-        let end_commit = match &end {
-            Endpoint::Worktree | Endpoint::Index => head()?,
-            Endpoint::Rev { spec } => rev(&repo, spec)?,
-            Endpoint::MergeBase { spec } => {
-                let x = rev(&repo, spec)?;
-                repo.merge_base(x, head()?)
-                    .map_err(|e| e.to_string())?
-                    .detach()
-            }
+
+        // end が解決できなくても一覧は返す。消えたブランチを指したまま保存されて
+        // いることがあり (取り込み済みの枝は prune で消える)、そこで一覧まで
+        // 止めると「選び直して直す」ことすらできなくなる。相手は HEAD で代用する。
+        let resolved = match &end {
+            Endpoint::Worktree | Endpoint::Index => head().ok(),
+            Endpoint::Rev { spec } => rev(&repo, spec).ok(),
+            Endpoint::MergeBase { spec } => rev(&repo, spec).ok().and_then(|x| {
+                let h = head().ok()?;
+                repo.merge_base(x, h).ok().map(|m| m.detach())
+            }),
+        };
+        let end_missing = resolved.is_none();
+        let end_commit = match resolved {
+            Some(id) => id,
+            None => head()?,
         };
 
         let mut entries = Vec::new();
@@ -482,6 +498,7 @@ pub async fn git_refs(root: String, end: Endpoint) -> Result<GitRefs, String> {
         Ok(GitRefs {
             entries,
             fetched_at: fetched_at(&repo),
+            end_missing,
         })
     })
     .await

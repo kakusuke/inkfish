@@ -538,13 +538,55 @@ body.is-pane-collapsed .ink-tabstrip {
   color: var(--ink-2);
 }
 
+/* 範囲が解決できないとき。「変更はありません」と見分けが付くよう色を変え、
+   その場で直せるボタンを添える (消えたブランチを指していると、選び直すまで
+   何をしても変わらないため) */
+.ink-git-broken {
+  padding: 6px 8px 4px;
+  font-size: 11.5px;
+  color: var(--git-deleted);
+}
+
+.ink-git-fix {
+  margin: 0 8px;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  font-family: var(--sans);
+  font-size: 11px;
+  color: var(--ink);
+  cursor: default;
+}
+
+.ink-git-fix:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 /* --- 比較する範囲を選ぶポップオーバー --- */
 .ink-git-range-menu {
   position: fixed;
   z-index: 20;
   display: flex;
   flex-direction: column;
-  width: 320px;
+  width: 300px;
+  padding-bottom: 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+/* 候補の一覧。「他…」のボタンに合わせて開く。position: fixed なので、親の
+   ポップオーバーの外へ出られる。親の中に置いてあるのは、外側クリックの判定
+   (chrome/popover.ts) で親まで閉じてしまわないようにするため */
+.ink-grm-picker {
+  position: fixed;
+  z-index: 21;
+  display: flex;
+  flex-direction: column;
+  width: 300px;
   max-height: 60vh;
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -553,8 +595,8 @@ body.is-pane-collapsed .ink-tabstrip {
   overflow: hidden;
 }
 
-/* 「どこまで」は 3 択 + その他。普段は作業ツリーのままなので、
-   選び直しが 1 クリックで済むようリストではなく並べたボタンにする */
+/* どちらの側も 3 択 + その他。普段は作業ツリーのままなので、選び直しが
+   1 クリックで済むようリストではなく並べたボタンにする */
 .ink-grm-ends {
   display: flex;
   gap: 3px;
@@ -588,8 +630,24 @@ body.is-pane-collapsed .ink-tabstrip {
   font-weight: 600;
 }
 
+/* 下の一覧がどちら側に効いているか。選ばれている値 (is-on) とは別の話なので、
+   枠を破線にして区別する */
+.ink-grm-end.is-open {
+  border-style: dashed;
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* 指している先が無い。直すまで変更は取れない */
+.ink-grm-end.is-missing {
+  border-color: var(--git-deleted);
+  background: transparent;
+  color: var(--git-deleted);
+  text-decoration: line-through;
+}
+
 .ink-grm-filter {
-  margin: 6px 8px;
+  margin: 8px;
   padding: 5px 8px;
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -606,6 +664,7 @@ body.is-pane-collapsed .ink-tabstrip {
 
 .ink-grm-list {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 0 6px 8px;
 }
@@ -622,6 +681,42 @@ body.is-pane-collapsed .ink-tabstrip {
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+  color: var(--ink-2);
+}
+
+/* 畳めるまとまりの見出し。押すと開閉する */
+.ink-grm-fold {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font: inherit;
+  letter-spacing: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: default;
+}
+
+.ink-grm-fold:hover {
+  color: var(--ink);
+}
+
+/* 畳んだまとまりの件数 */
+.ink-grm-count {
+  margin-left: 6px;
+  font-weight: 400;
+  color: var(--ink-2);
+}
+
+/* 見出しに添える取得時刻。見出しと違って読ませる文字なので小文字のまま */
+.ink-grm-when {
+  flex: none;
+  font-family: var(--sans);
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
   color: var(--ink-2);
 }
 
