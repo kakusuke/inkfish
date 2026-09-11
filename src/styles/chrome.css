@@ -187,6 +187,65 @@
   white-space: nowrap;
 }
 
+/* --- 右クリックのメニュー (chrome/ctxmenu.ts) --- */
+.ink-menu {
+  position: fixed;
+  z-index: 40;
+  min-width: 200px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.ink-mi {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  font-family: var(--sans);
+  font-size: 12px;
+  color: var(--ink);
+  text-align: left;
+  cursor: default;
+}
+
+.ink-mi:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+
+.ink-mi:disabled {
+  color: var(--ink-2);
+  opacity: 0.5;
+}
+
+.ink-mi-label {
+  flex: none;
+}
+
+/* 端点の名前 (main の分岐点 / 作業ツリー) を副題に出す */
+.ink-mi-note {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-2);
+}
+
+.ink-mi-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--line);
+}
+
 .ink-tb-actions {
   display: flex;
   gap: 2px;

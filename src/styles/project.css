@@ -538,22 +538,72 @@ body.is-pane-collapsed .ink-tabstrip {
   color: var(--ink-2);
 }
 
-/* --- 変更の行の右クリックメニュー --- */
-.ink-git-menu {
+/* 範囲が解決できないとき。「変更はありません」と見分けが付くよう色を変え、
+   その場で直せるボタンを添える (消えたブランチを指していると、選び直すまで
+   何をしても変わらないため) */
+.ink-git-broken {
+  padding: 6px 8px 4px;
+  font-size: 11.5px;
+  color: var(--git-deleted);
+}
+
+.ink-git-fix {
+  margin: 0 8px;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  font-family: var(--sans);
+  font-size: 11px;
+  color: var(--ink);
+  cursor: default;
+}
+
+.ink-git-fix:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* --- 比較する範囲を選ぶポップオーバー --- */
+.ink-git-range-menu {
   position: fixed;
   z-index: 20;
-  min-width: 200px;
-  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  width: 320px;
+  max-height: 70vh;
+  padding-bottom: 4px;
+  overflow: hidden;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 10px;
   background: var(--surface);
   box-shadow: var(--shadow);
 }
 
-.ink-git-mi {
+/* 2 つの面 (比較の一覧 / 2 つの地点)。切り替えても窓が飛ばないよう、
+   どちらも同じ器の中で出し入れする */
+.ink-cmp-face {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.ink-cmp-list {
+  padding: 6px 6px 0;
+}
+
+/* ブランチだけがスクロールする。よく使う比較は上に貼り付いたまま */
+.ink-cmp-branches {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 6px 4px;
+}
+
+/* 比較 1 つ。左から 名前 / ローカルの断り / 件数 / 日時 */
+.ink-cmp-row {
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: 6px;
   width: 100%;
   padding: 5px 8px;
   border: none;
@@ -566,38 +616,139 @@ body.is-pane-collapsed .ink-tabstrip {
   cursor: default;
 }
 
-.ink-git-mi:hover:not(:disabled) {
+.ink-cmp-row:hover,
+.ink-cmp-row.is-cursor {
   background: var(--accent-soft);
 }
 
-.ink-git-mi:disabled {
-  color: var(--ink-2);
-  opacity: 0.5;
+.ink-cmp-row.is-on {
+  color: var(--accent);
+  font-weight: 600;
 }
 
-.ink-git-mi-label {
-  flex: none;
-}
-
-/* 端点の名前 (main の分岐点 / 作業ツリー) を副題に出す */
-.ink-git-mi-note {
+.ink-cmp-name {
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  text-align: right;
-  font-family: var(--mono);
-  font-size: 10px;
+}
+
+.ink-cmp-tag {
+  flex: none;
+  font-size: 9.5px;
   color: var(--ink-2);
 }
 
-/* --- 比較する範囲を選ぶポップオーバー --- */
-.ink-git-range-menu {
+/* 変わる md の件数。選ぶ前にどれを見ればよいか分かるように出す。
+   数え終わるまでは空 (0 と紛らわしいため) なので、幅だけ先に取っておく */
+.ink-cmp-count {
+  flex: none;
+  min-width: 1.6em;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  text-align: right;
+  color: var(--ink-2);
+}
+
+.ink-cmp-count.is-zero {
+  opacity: 0.35;
+}
+
+.ink-cmp-when {
+  flex: none;
+  width: 4.6em;
+  font-size: 10px;
+  text-align: right;
+  color: var(--ink-2);
+}
+
+/* ブランチの絞り込み。本数が少ないうちは出さない */
+.ink-cmp-filter {
+  margin: 0 8px 4px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink);
+}
+
+.ink-cmp-filter:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* 「ほかのブランチ」「2 つの地点を選ぶ…」「← 比較の一覧へ」。
+   行そのものではなく、行を増やす / 面を変えるための小さな字 */
+.ink-cmp-more,
+.ink-cmp-manual,
+.ink-cmp-back {
+  margin: 0 6px;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  font-family: var(--sans);
+  font-size: 11px;
+  color: var(--ink-2);
+  text-align: left;
+  cursor: default;
+}
+
+.ink-cmp-manual,
+.ink-cmp-back {
+  margin: 2px 6px 6px;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  padding-top: 7px;
+}
+
+.ink-cmp-back {
+  border-top: none;
+  border-bottom: 1px solid var(--line);
+  margin: 0 6px 6px;
+  padding: 6px 8px;
+}
+
+.ink-cmp-more:hover,
+.ink-cmp-manual:hover,
+.ink-cmp-back:hover {
+  color: var(--accent);
+}
+
+/* 見出しに置く取得ボタン (リモートごと) */
+.ink-cmp-fetch {
+  flex: none;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-family: var(--sans);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--accent);
+  cursor: default;
+}
+
+.ink-cmp-fetch:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.ink-cmp-fetch:disabled {
+  color: var(--ink-2);
+}
+
+/* 候補の一覧。「他…」のボタンに合わせて開く。position: fixed なので、親の
+   ポップオーバーの外へ出られる。親の中に置いてあるのは、外側クリックの判定
+   (chrome/popover.ts) で親まで閉じてしまわないようにするため */
+.ink-grm-picker {
   position: fixed;
-  z-index: 20;
+  z-index: 21;
   display: flex;
   flex-direction: column;
-  width: 320px;
+  width: 300px;
   max-height: 60vh;
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -606,8 +757,8 @@ body.is-pane-collapsed .ink-tabstrip {
   overflow: hidden;
 }
 
-/* 「どこまで」は 3 択 + その他。普段は作業ツリーのままなので、
-   選び直しが 1 クリックで済むようリストではなく並べたボタンにする */
+/* どちらの側も 3 択 + その他。普段は作業ツリーのままなので、選び直しが
+   1 クリックで済むようリストではなく並べたボタンにする */
 .ink-grm-ends {
   display: flex;
   gap: 3px;
@@ -641,8 +792,24 @@ body.is-pane-collapsed .ink-tabstrip {
   font-weight: 600;
 }
 
+/* 下の一覧がどちら側に効いているか。選ばれている値 (is-on) とは別の話なので、
+   枠を破線にして区別する */
+.ink-grm-end.is-open {
+  border-style: dashed;
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* 指している先が無い。直すまで変更は取れない */
+.ink-grm-end.is-missing {
+  border-color: var(--git-deleted);
+  background: transparent;
+  color: var(--git-deleted);
+  text-decoration: line-through;
+}
+
 .ink-grm-filter {
-  margin: 6px 8px;
+  margin: 8px;
   padding: 5px 8px;
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -659,6 +826,7 @@ body.is-pane-collapsed .ink-tabstrip {
 
 .ink-grm-list {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 0 6px 8px;
 }
@@ -675,6 +843,42 @@ body.is-pane-collapsed .ink-tabstrip {
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+  color: var(--ink-2);
+}
+
+/* 畳めるまとまりの見出し。押すと開閉する */
+.ink-grm-fold {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font: inherit;
+  letter-spacing: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: default;
+}
+
+.ink-grm-fold:hover {
+  color: var(--ink);
+}
+
+/* 畳んだまとまりの件数 */
+.ink-grm-count {
+  margin-left: 6px;
+  font-weight: 400;
+  color: var(--ink-2);
+}
+
+/* 見出しに添える取得時刻。見出しと違って読ませる文字なので小文字のまま */
+.ink-grm-when {
+  flex: none;
+  font-family: var(--sans);
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
   color: var(--ink-2);
 }
 

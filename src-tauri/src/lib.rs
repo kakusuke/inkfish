@@ -1662,6 +1662,7 @@ pub fn run() {
             export_pdf,
             git::git_probe,
             git::git_changes,
+            git::git_counts,
             git::git_refs,
             git::git_blob,
             git::git_hunks,

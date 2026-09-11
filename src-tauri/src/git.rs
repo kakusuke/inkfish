@@ -245,6 +245,13 @@ fn collect_tree_diff(
 
     for c in changes {
         use gix::diff::tree_with_rewrites::Change as C;
+        // gix はファイルの変更だけでなく、その親ディレクトリも 1 エントリずつ
+        // 返す (ディレクトリごとの改名を組み立て直せるようにするため)。中の
+        // ファイルと二重になるので落とす — 残すと「ほか N ファイル」が親の数だけ
+        // 増え、`.md` で終わる名前のディレクトリは一覧に並んでしまう。
+        if c.entry_mode().is_tree() {
+            continue;
+        }
         let (state, rel, from) = match c {
             C::Addition { location, .. } => ("A", location.to_string(), None),
             C::Deletion { location, .. } => ("D", location.to_string(), None),
@@ -264,27 +271,30 @@ fn collect_tree_diff(
     Ok(())
 }
 
-/// start から end までの間に変わった md を返す。
-#[tauri::command]
-pub async fn git_changes(
-    root: String,
-    start: Endpoint,
-    end: Endpoint,
+/// start から end までの間に変わった md を集める。
+///
+/// 一覧を出すのにも、候補それぞれの件数を数えるのにも要るので、repo を開く
+/// ところと切り離してある (件数は範囲ぶん繰り返すため、開き直したくない)。
+fn changes_of(
+    repo: &gix::Repository,
+    workdir: &Path,
+    start: &Endpoint,
+    end: &Endpoint,
 ) -> Result<GitChanges, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let repo = open(&root)?;
-        let workdir: PathBuf = repo
-            .workdir()
-            .ok_or_else(|| "作業ツリーがありません".to_string())?
-            .to_path_buf();
+    {
         let head = || repo.head_id().map(|i| i.detach()).map_err(|e| e.to_string());
 
+        // 解決できないときは、どちら側の指定が悪いのかを添える。消えたブランチを
+        // 指したまま保存されていることがあり、ただ「解決できません」とだけ出ても
+        // 直しようが分からない。
+        let side = |which: &str, e: String| format!("{which}が{e}");
+
         // end 側のコミット。start に分岐点を指定されたときの相手にもなる
-        let end_commit = match &end {
+        let end_commit = match end {
             Endpoint::Worktree | Endpoint::Index => head()?,
-            Endpoint::Rev { spec } => rev(&repo, spec)?,
+            Endpoint::Rev { spec } => rev(repo, spec).map_err(|e| side("変更後", e))?,
             Endpoint::MergeBase { spec } => {
-                let x = rev(&repo, spec)?;
+                let x = rev(repo, spec).map_err(|e| side("変更後", e))?;
                 repo.merge_base(x, head()?)
                     .map_err(|e| e.to_string())?
                     .detach()
@@ -294,19 +304,19 @@ pub async fn git_changes(
         let mut acc: HashMap<String, Acc> = HashMap::new();
         let mut start_id = String::new();
 
-        match (&start, &end) {
+        match (start, end) {
             // ステージ済み → 作業ツリー。まだステージしていないぶんだけ
             (Endpoint::Index, Endpoint::Worktree) => {
-                collect_status(&repo, tree_of(&repo, head()?)?, false, true, &mut acc)?;
+                collect_status(repo, tree_of(repo, head()?)?, false, true, &mut acc)?;
             }
             (Endpoint::Index, _) | (Endpoint::Worktree, _) => {
                 return Err("その向きの比較には対応していません".into());
             }
             (s, e) => {
                 let start_commit = match s {
-                    Endpoint::Rev { spec } => rev(&repo, spec)?,
+                    Endpoint::Rev { spec } => rev(repo, spec).map_err(|e| side("変更前", e))?,
                     Endpoint::MergeBase { spec } => {
-                        let x = rev(&repo, spec)?;
+                        let x = rev(repo, spec).map_err(|e| side("変更前", e))?;
                         repo.merge_base(x, end_commit)
                             .map_err(|e| e.to_string())?
                             .detach()
@@ -314,13 +324,13 @@ pub async fn git_changes(
                     _ => unreachable!("上で弾いている"),
                 };
                 start_id = start_commit.to_hex().to_string();
-                let start_tree = tree_of(&repo, start_commit)?;
+                let start_tree = tree_of(repo, start_commit)?;
                 match e {
-                    Endpoint::Worktree => collect_status(&repo, start_tree, true, true, &mut acc)?,
-                    Endpoint::Index => collect_status(&repo, start_tree, true, false, &mut acc)?,
+                    Endpoint::Worktree => collect_status(repo, start_tree, true, true, &mut acc)?,
+                    Endpoint::Index => collect_status(repo, start_tree, true, false, &mut acc)?,
                     _ => {
-                        let end_tree = tree_of(&repo, end_commit)?;
-                        collect_tree_diff(&repo, start_tree, end_tree, &mut acc)?;
+                        let end_tree = tree_of(repo, end_commit)?;
+                        collect_tree_diff(repo, start_tree, end_tree, &mut acc)?;
                     }
                 }
             }
@@ -352,7 +362,7 @@ pub async fn git_changes(
         }
         entries.sort_by(|a, b| a.rel.cmp(&b.rel));
 
-        let end_id = match &end {
+        let end_id = match end {
             Endpoint::Worktree | Endpoint::Index => String::new(),
             _ => end_commit.to_hex().to_string(),
         };
@@ -363,6 +373,60 @@ pub async fn git_changes(
             start_id,
             end_id,
         })
+    }
+}
+
+/// 作業ツリーの場所。無い (bare) リポジトリは扱わない。
+fn workdir_of(repo: &gix::Repository) -> Result<PathBuf, String> {
+    repo.workdir()
+        .map(|p| p.to_path_buf())
+        .ok_or_else(|| "作業ツリーがありません".to_string())
+}
+
+/// start から end までの間に変わった md を返す。
+#[tauri::command]
+pub async fn git_changes(
+    root: String,
+    start: Endpoint,
+    end: Endpoint,
+) -> Result<GitChanges, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let repo = open(&root)?;
+        let workdir = workdir_of(&repo)?;
+        changes_of(&repo, &workdir, &start, &end)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 数えたい範囲 1 つ。フロントの Range と対。
+#[derive(Deserialize)]
+pub struct Pair {
+    start: Endpoint,
+    end: Endpoint,
+}
+
+/// 比較の候補それぞれで、変わる md が何件になるか。
+///
+/// 選ぶ前に「どれを見ればよいか」が分かるように、一覧の右へ出す数。件数だけ
+/// 要るので中身は捨てる。解決できない範囲 (消えたブランチなど) は null にして、
+/// そこだけ数が出ない形にする — 1 つ転ぶと一覧ごと数が消えるのは困る。
+#[tauri::command]
+pub async fn git_counts(
+    root: String,
+    ranges: Vec<Pair>,
+) -> Result<Vec<Option<usize>>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let repo = open(&root)?;
+        let workdir = workdir_of(&repo)?;
+        Ok(ranges
+            .iter()
+            .map(|r| {
+                changes_of(&repo, &workdir, &r.start, &r.end)
+                    .ok()
+                    .map(|c| c.entries.len())
+            })
+            .collect())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -387,6 +451,8 @@ pub struct RefEntry {
     base: Option<String>,
     base_time: Option<i64>,
     base_summary: Option<String>,
+    /// その ref が指すコミットの日時 (epoch ミリ秒)。新しい順に並べるのに使う
+    time: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -395,6 +461,10 @@ pub struct GitRefs {
     entries: Vec<RefEntry>,
     /// 最後に fetch した時刻。リモートの見出しに出す
     fetched_at: Option<u64>,
+    /// end が解決できなかった (消えたブランチを指しているなど)。
+    /// そのときも一覧は返す — 選び直せないと手の打ちようがなくなるため。
+    /// 分岐点は HEAD を相手に計算してある。
+    end_missing: bool,
 }
 
 /// end に対する候補の一覧。end が決まらないと分岐点が定まらないので end を受け取る。
@@ -403,15 +473,22 @@ pub async fn git_refs(root: String, end: Endpoint) -> Result<GitRefs, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let repo = open(&root)?;
         let head = || repo.head_id().map(|i| i.detach()).map_err(|e| e.to_string());
-        let end_commit = match &end {
-            Endpoint::Worktree | Endpoint::Index => head()?,
-            Endpoint::Rev { spec } => rev(&repo, spec)?,
-            Endpoint::MergeBase { spec } => {
-                let x = rev(&repo, spec)?;
-                repo.merge_base(x, head()?)
-                    .map_err(|e| e.to_string())?
-                    .detach()
-            }
+
+        // end が解決できなくても一覧は返す。消えたブランチを指したまま保存されて
+        // いることがあり (取り込み済みの枝は prune で消える)、そこで一覧まで
+        // 止めると「選び直して直す」ことすらできなくなる。相手は HEAD で代用する。
+        let resolved = match &end {
+            Endpoint::Worktree | Endpoint::Index => head().ok(),
+            Endpoint::Rev { spec } => rev(&repo, spec).ok(),
+            Endpoint::MergeBase { spec } => rev(&repo, spec).ok().and_then(|x| {
+                let h = head().ok()?;
+                repo.merge_base(x, h).ok().map(|m| m.detach())
+            }),
+        };
+        let end_missing = resolved.is_none();
+        let end_commit = match resolved {
+            Some(id) => id,
+            None => head()?,
         };
 
         let mut entries = Vec::new();
@@ -460,6 +537,12 @@ pub async fn git_refs(root: String, end: Endpoint) -> Result<GitRefs, String> {
                 }
             }
 
+            let time = repo
+                .find_commit(id)
+                .ok()
+                .and_then(|c| c.time().ok())
+                .map(|t| t.seconds * 1000);
+
             entries.push(RefEntry {
                 name,
                 kind,
@@ -468,6 +551,7 @@ pub async fn git_refs(root: String, end: Endpoint) -> Result<GitRefs, String> {
                 base,
                 base_time,
                 base_summary,
+                time,
             });
         }
 
@@ -475,6 +559,7 @@ pub async fn git_refs(root: String, end: Endpoint) -> Result<GitRefs, String> {
         Ok(GitRefs {
             entries,
             fetched_at: fetched_at(&repo),
+            end_missing,
         })
     })
     .await
@@ -483,10 +568,23 @@ pub async fn git_refs(root: String, end: Endpoint) -> Result<GitRefs, String> {
 
 // ---------- 起点版のファイル ----------
 
+/// リポジトリを探し始める場所。実在する最初の親フォルダ。
+///
+/// 起点版にしか無いファイルは、その親フォルダも作業ツリーに無いことがある
+/// (枝がフォルダごと足した場合)。無いフォルダからは repo を探せないので、
+/// 実在するところまで遡る。
+fn nearest_dir(path: &Path) -> Option<&Path> {
+    let mut cur = path.parent()?;
+    while !cur.is_dir() {
+        cur = cur.parent()?;
+    }
+    Some(cur)
+}
+
 /// その地点でのファイルの中身。path は絶対パスで、そこからリポジトリを探す。
 /// 画像も読むのでバイト列で返す (テキストに限らない)。
 pub(crate) fn blob_at(rev: &str, path: &Path) -> Result<Vec<u8>, String> {
-    let dir = path.parent().ok_or_else(|| "パスが不正です".to_string())?;
+    let dir = nearest_dir(path).ok_or_else(|| "パスが不正です".to_string())?;
     let repo = gix::discover(dir).map_err(|e| e.to_string())?;
     let workdir = repo
         .workdir()
