@@ -320,6 +320,10 @@ function bandsOf(before: DocumentViewer, after: DocumentViewer): Band[] {
   return bands.sort((x, y) => x.bTop - y.bTop || x.aTop - y.aTop);
 }
 
+/// 末尾に共通の中身が残っていると見なす最小の丈。丸めや枠の太さで数 px の
+/// 差は出るので、行 1 つぶんに満たないものは「残っていない」とする。
+const COMMON_TAIL = 12;
+
 /// 左右の動きを合わせる。
 ///
 /// 中身の長さは左右で違う。割合で合わせると下へ行くほどずれるし、短い側に
@@ -397,16 +401,14 @@ export function keepSynced(
     const keep = scroller.scrollTop;
     viewport.style.height = `${h}px`;
 
-    // 対応表の末尾は「内容の総高さ」にする。スクロールできる量 (総高さ − 画面)
-    // で止めると、基準点を画面の中ほどに置いたぶんだけ手前で頭打ちになる。
-    const bEnd = before.scrollEl.scrollHeight;
-    const aEnd = after.scrollEl.scrollHeight;
-
     bands = bandsOf(before, after);
 
-    // 逃げ (bPad / aPad) は自分で足したものなので、中身の丈から外して測る
-    const bBody = bEnd - bPad.offsetHeight;
-    const aBody = aEnd - aPad.offsetHeight;
+    // 中身の丈。ずらすのは本文 (contentEl) なので、丈も本文で測る。外枠
+    // (scrollEl) で測ると本文の外の余白がぶんだけ大きく出て、その差だけ
+    // 本文を上へ送りすぎる — 片側が短いところで、短いほうが止まらずに
+    // 画面の外へ流れ去る。
+    const bBody = before.contentEl.scrollHeight;
+    const aBody = after.contentEl.scrollHeight;
 
     // 末尾に「片側にしか無い差分」が続いているところは、下を左右で揃えない。
     //
@@ -417,8 +419,16 @@ export function keepSynced(
     //
     // 続いているぶんをまとめて見るのが肝。いちばん後ろの 1 つだけを見ると、
     // その手前で止まっていたぶんが数に入らず、逃げが足りない。
+    //
+    // ただし、その後ろに共通の中身が残っているなら話は別。そこは左右で同じ
+    // ものが並ぶ「揃えるべき末尾」なので、片側だけの差分がいくつ続いていても
+    // 尻を積んで揃える。揃えないのは、文書がその差分で終わっているときだけ。
+    const tail = bands[bands.length - 1];
+    const common = tail
+      ? Math.min(bBody - tail.bBottom, aBody - tail.aBottom) > COMMON_TAIL
+      : false;
     let openFrom = bands.length;
-    while (openFrom > 0) {
+    while (!common && openFrom > 0) {
       const b = bands[openFrom - 1];
       if (b.bTop !== b.bBottom && b.aTop !== b.aBottom) break;
       openFrom--;
