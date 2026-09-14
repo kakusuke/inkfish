@@ -8,6 +8,7 @@ import { DocumentViewer, type LinkTarget } from "../viewer/viewer";
 import { Toolbar } from "./toolbar";
 import { Toast, wireLinkStatus } from "../chrome/toast";
 import { PopoverGroup } from "../chrome/popover";
+import { ContextMenu, copyItems } from "../chrome/ctxmenu";
 import { FindBar } from "../chrome/findbar";
 import { fillSettings, openInEditor, wireSettings } from "../chrome/settings";
 import { pushRecent, renderRecents } from "./recents";
@@ -49,6 +50,8 @@ export class AppShell {
   private toolbar: Toolbar;
   private toast: Toast;
   private popovers = new PopoverGroup();
+  /// 右クリックのメニュー。ウィンドウに 1 つ
+  private menu = new ContextMenu();
   private findBar: FindBar;
   private emptyEl: HTMLElement;
 
@@ -128,6 +131,18 @@ export class AppShell {
     });
     this.windowMenu.close = () => this.popovers.close(windowPopover);
     this.toolbar.capsule.addEventListener("click", () => this.popovers.toggle(windowPopover));
+    // カプセルが指しているのは今開いている ID (ファイルのパス・起点版・差分)。
+    // 右クリックでそれをコピーできる。
+    this.toolbar.capsule.addEventListener("contextmenu", (e) => {
+      if (!this.currentPath) return;
+      e.preventDefault();
+      this.popovers.closeAll();
+      this.menu.open(
+        copyItems(this.currentPath, (m) => this.toast.show(m)),
+        e.clientX,
+        e.clientY
+      );
+    });
     // ↑↓ / Enter は一覧が開いているときだけ専有する
     window.addEventListener("keydown", (e) => {
       if (!this.popovers.isOpen(windowPopover)) return;
@@ -144,6 +159,8 @@ export class AppShell {
     onAct("empty-open", () => void this.pickFile());
     onAct("open-dir", () => void this.pickDir());
     onAct("edit", () => void this.editCurrent());
+    onAct("diff-prev", () => this.sync?.jump(-1));
+    onAct("diff-next", () => this.sync?.jump(1));
   }
 
   private wireBackend() {
@@ -321,6 +338,7 @@ export class AppShell {
     this.toolbar.showCapsule();
     // 起点版 (rev:/…) は実ファイルが無いのでエディタでは開けない
     $('[data-act="edit"]').classList.toggle("hidden", isRev(path));
+    this.showDiffWalk(false);
     // 起点版は「最近開いたファイル」には積まない (実体が無く、開き直せないため)
     if (!isRev(path)) pushRecent(path, this.currentName);
     // 「同じファイルは同じウィンドウ」の台帳に先に載せる。front matter の
@@ -367,8 +385,16 @@ export class AppShell {
     this.emptyEl.classList.add("hidden");
     this.toolbar.showCapsule();
     $('[data-act="edit"]').classList.add("hidden");
+    this.showDiffWalk(true);
     setWindowTabs([{ path, caption: this.currentName }], 0).catch(() => {});
     this.toolbar.setMarpMode(false);
+  }
+
+  /// 変わったところを渡り歩くボタン。左右に並べているときだけ出す。
+  private showDiffWalk(on: boolean) {
+    for (const act of ["diff-prev", "diff-next"]) {
+      $(`[data-act="${act}"]`).classList.toggle("hidden", !on);
+    }
   }
 
   private async reload(retry = true) {

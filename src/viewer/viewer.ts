@@ -60,14 +60,6 @@ export type ChangeSpan = {
   point: boolean;
 };
 
-/// 線 1 本ぶんのまとまり。近い差分をつないだもの。
-export type ChangeRun = {
-  top: number;
-  bottom: number;
-  kind: string;
-  hunks: number[];
-};
-
 /// 要素が root の中のどこにあるか。transform の影響を受けないレイアウト上の値。
 export function offsetTopIn(el: HTMLElement, root: HTMLElement): number {
   let y = 0;
@@ -77,6 +69,62 @@ export function offsetTopIn(el: HTMLElement, root: HTMLElement): number {
     cur = cur.offsetParent as HTMLElement | null;
   }
   return y;
+}
+
+/// 目印が乗っている視覚行の縁。行頭の目印なら上端、行末の目印なら下端。
+///
+/// 目印そのものの位置は当てにできない。幅がゼロでも行の中では 1 つの箱として
+/// 扱われるので、折り返しがちょうど行の頭に重なると、目印と後ろの文字との間で
+/// 折り返されて、目印だけが前の行の末尾に取り残される (和文はどの文字の間でも
+/// 折り返せる)。線の上端がそこから始まると、変わっていない 1 行を余計に
+/// 巻き込んでしまう。
+///
+/// そこで、目印にくっついている中身のほうを測る。中身が無いところ
+/// (空行など) では測りようがないので、そのときだけ目印自身に戻す。
+///
+/// 返すのは origin からの距離。origin は本文の内枠の上端 (offsetTop と同じ
+/// 起点) を画面の座標で与える。差分では本文を transform でずらすが、どちらも
+/// 同じだけずれるので引けば消える。
+function lineEdgeIn(
+  el: HTMLElement,
+  origin: number,
+  lineHeight: (el: Element) => number
+): number | null {
+  const parent = el.parentNode;
+  if (!(parent instanceof Element)) return null;
+  const head = el.classList.contains("ink-at-head");
+  const kids = Array.from(parent.childNodes);
+  const i = kids.indexOf(el);
+
+  // 見るのはその行の中身だけ。同じ行の相手の目印で区切る — コードブロックは
+  // 行がどれも同じ親に並ぶので、区切らないと空の行で次の行を掴んでしまう。
+  // 相手が別の入れ子に居て見つからないときは器の端まで (いちばん近い中身を
+  // 採るので、それでも同じ行に当たる)。
+  const mate = (cls: string, step: number) => {
+    for (let j = i + step; j >= 0 && j < kids.length; j += step) {
+      const k = kids[j];
+      if (k instanceof Element && k.classList.contains(cls)) return j;
+    }
+    return null;
+  };
+  const range = document.createRange();
+  // 行頭なら後ろ、行末なら前
+  if (head) {
+    range.setStart(parent, i + 1);
+    range.setEnd(parent, mate("ink-at-tail", 1) ?? kids.length);
+  } else {
+    const from = mate("ink-at-head", -1);
+    range.setStart(parent, from === null ? 0 : from + 1);
+    range.setEnd(parent, i);
+  }
+  const rects = Array.from(range.getClientRects()).filter((r) => r.height > 0);
+  if (!rects.length) return null;
+
+  // 中身の矩形は文字の高さで、行送りより低い。上下に等しく分けて広げると
+  // その行が画面で占める高さに戻る (画像のように行送りより高いものはそのまま)。
+  const r = head ? rects[0] : rects[rects.length - 1];
+  const lead = Math.max(0, (lineHeight(parent) - r.height) / 2);
+  return (head ? r.top - lead : r.bottom + lead) - origin;
 }
 
 const MARKUP = `
@@ -444,6 +492,25 @@ export class DocumentViewer {
         .map(Number)
         .filter((n) => Number.isFinite(n));
 
+    // 行の目印は中身を測って出す (lineEdgeIn)。起点と行送りは何度も要るので
+    // ここで 1 度だけ用意する。
+    const origin = this.docEl.getBoundingClientRect().top + this.docEl.clientTop;
+    const heights = new Map<Element, number>();
+    const lineHeight = (el: Element) => {
+      const got = heights.get(el);
+      if (got !== undefined) return got;
+      // 行の高さを決めているのは、行を組んでいるブロック (段落や pre)。目印の
+      // 親がインラインのとき (コードのハイライト) は、そこまで外へたどる
+      let box: Element | null = el;
+      while (box && getComputedStyle(box).display === "inline") box = box.parentElement;
+      const px = parseFloat(getComputedStyle(box ?? el).lineHeight);
+      const lh = Number.isFinite(px) ? px : 0;
+      heights.set(el, lh);
+      return lh;
+    };
+    const edgeOf = (el: HTMLElement) =>
+      lineEdgeIn(el, origin, lineHeight) ?? offsetTopIn(el, this.docEl);
+
     // 高さのあるものを先に置く。同じまとまりに点が混ざっても、そちらが勝つ
     for (const el of marks) {
       if (el.hasAttribute("data-point")) continue;
@@ -456,42 +523,23 @@ export class DocumentViewer {
         continue;
       }
 
-      // 目印が指している行そのもの。行頭は行の上端、行末は下端に揃えてあるので
-      // (viewer.css)、2 つ合わせればその行の高さになる。折り返していても、
-      // それぞれが別の視覚行に乗るぶん、最小 top と最大 bottom で全体が入る。
-      const y = offsetTopIn(el, this.docEl);
+      // 目印が指している行そのもの。行頭は行の上端、行末は下端を返すので、
+      // 2 つ合わせればその行の高さになる。折り返していても、それぞれが別の
+      // 視覚行に乗るぶん、最小 top と最大 bottom で全体が入る。
+      const y = edgeOf(el);
       for (const hunk of hunksOf(el)) put(hunk, kind, y, y, false);
     }
 
     for (const el of marks) {
       if (!el.hasAttribute("data-point")) continue;
       const kind = el.dataset.kind ?? "mod";
-      const top = offsetTopIn(el, this.docEl);
+      // ブロックの境目に刺さる点は流れの外に置いてあり (viewer.css)、隣に
+      // 測れる中身が無い。そこだけは目印自身の位置で足りる。
+      const top = el.classList.contains("ink-at-gap") ? offsetTopIn(el, this.docEl) : edgeOf(el);
       for (const hunk of hunksOf(el)) if (!out.has(hunk)) put(hunk, kind, top, top, true);
     }
 
     return [...out.values()].sort((a, b) => a.top - b.top || a.hunk - b.hunk);
-  }
-
-  /// 線 1 本ぶんのまとまり。
-  ///
-  /// 差分そのものは細かく割れているが、読み手が見ているのは線のまとまりなので、
-  /// 左右を結ぶ帯もスクロールの区切りもこの単位にそろえる。近くても種類 (追加・
-  /// 削除・変更) が違えば色を分ける以上つなげない。
-  changeRuns(): ChangeRun[] {
-    const join = this.joinGap();
-    const runs: ChangeRun[] = [];
-    for (const s of this.changeSpans()) {
-      if (s.point) continue;
-      const last = runs[runs.length - 1];
-      if (last && last.kind === s.kind && s.top - last.bottom <= join) {
-        last.bottom = Math.max(last.bottom, s.bottom);
-        last.hunks.push(s.hunk);
-        continue;
-      }
-      runs.push({ top: s.top, bottom: s.bottom, kind: s.kind, hunks: [s.hunk] });
-    }
-    return runs;
   }
 
   /// 相手側だけが増えた位置。その側には線が出ないので、帯の頂点に使う。
@@ -501,27 +549,25 @@ export class DocumentViewer {
     return out;
   }
 
-  /// つなぐ間合い。行の高さを基準にする (段落どうしの余白ぶん)
-  private joinGap(): number {
-    return (parseFloat(getComputedStyle(this.docEl).lineHeight) || 24) * 1.6;
-  }
-
   /// 変わったところの縁に線を引く。
   ///
-  /// まとまりの出し方は changeRuns に任せる。左右を結ぶ帯もスクロールの
-  /// 区切りも同じものを見るので、線とずれることがない。図の読み込みや幅の
-  /// 変化で位置が動くため、docEl の寸法が変わるたびに引き直す。
+  /// 引くのはハンク 1 つにつき 1 本 (changeSpans がそのまま線になる)。近い
+  /// ものをつなぐと、つなぐかどうかの判断が要る — 画面の隙間で決めると
+  /// 折り返しが幅で変わるぶん左右で答えが食い違い、行で決めると画面の
+  /// 見た目と合わない。つながなければ迷いが消えて、左右も必ず 1 対 1 になる。
+  /// 図の読み込みや幅の変化で位置が動くため、docEl の寸法が変わるたびに引き直す。
   private paintChangeBars() {
     for (const old of Array.from(this.docEl.querySelectorAll(".ink-change-bar"))) {
       old.remove();
     }
-    for (const run of this.changeRuns()) {
+    for (const s of this.changeSpans()) {
+      if (s.point) continue;
       const bar = document.createElement("div");
       bar.className = "ink-change-bar";
-      bar.dataset.change = run.kind;
+      bar.dataset.change = s.kind;
       bar.setAttribute("aria-hidden", "true");
-      bar.style.top = `${run.top}px`;
-      bar.style.height = `${Math.max(0, run.bottom - run.top)}px`;
+      bar.style.top = `${s.top}px`;
+      bar.style.height = `${Math.max(0, s.bottom - s.top)}px`;
       this.docEl.appendChild(bar);
     }
   }

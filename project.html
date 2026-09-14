@@ -39,6 +39,13 @@
         </button>
 
         <div class="ink-tb-actions">
+          <!-- 差分を並べているときだけ出る。変わったところを渡り歩く -->
+          <button data-act="diff-prev" class="ink-tb-btn hidden" title="前の差分へ (⌘⌥↑)">
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9.5l4-4 4 4"/></svg>
+          </button>
+          <button data-act="diff-next" class="ink-tb-btn hidden" title="次の差分へ (⌘⌥↓)">
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5l4 4 4-4"/></svg>
+          </button>
           <button data-act="edit" class="ink-tb-btn hidden" title="エディタで開く (⌘E)">
             <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M11.5 2.5l2 2L5 13l-2.7.7L3 11l8.5-8.5z"/></svg>
           </button>
@@ -63,32 +70,37 @@
     <!-- 開いているウィンドウとタブの一覧 -->
     <div class="ink-window-menu hidden" role="listbox" aria-label="開いているウィンドウ"></div>
 
-    <!-- 変更の行を右クリックしたときのメニュー。ペインの外に置く理由は下と同じ -->
-    <div class="ink-git-menu hidden" role="menu">
-      <button type="button" class="ink-git-mi" data-act="diff" role="menuitem">
-        <span class="ink-git-mi-label">差分を並べて開く</span>
-        <span class="ink-git-mi-note"></span>
-      </button>
-      <button type="button" class="ink-git-mi" data-act="before" role="menuitem">
-        <span class="ink-git-mi-label">変更前を開く</span>
-        <span class="ink-git-mi-note"></span>
-      </button>
-      <button type="button" class="ink-git-mi" data-act="after" role="menuitem">
-        <span class="ink-git-mi-label">変更後を開く</span>
-        <span class="ink-git-mi-note"></span>
-      </button>
-    </div>
-
     <!-- 比較する範囲を選ぶ。.ink-pane は overflow:hidden なので本体の外に置き、
          開くときにボタンの位置へ合わせる (ウィンドウ切替メニューと同じ理由) -->
     <div class="ink-git-range-menu hidden" role="dialog" aria-label="比較する範囲">
-      <!-- 「どこから」の候補は「どこまで」に依存する (分岐点は 2 点で決まる) ので、
-           先に決める側を上に置く。中身は RangeMenu が組む -->
-      <p class="ink-grm-head">どこまで</p>
-      <div class="ink-grm-ends"></div>
-      <p class="ink-grm-head ink-grm-fromhead">どこから</p>
-      <input class="ink-grm-filter" type="text" placeholder="絞り込み / HEAD~3 など" spellcheck="false" autocomplete="off" />
-      <div class="ink-grm-list" role="listbox"></div>
+      <!-- 面は 2 つ。ふだんは「何を見たいか」の一覧で、端点を自分で指す人だけが
+           奥の「2 つの地点」に入る。中身は RangeMenu が組む -->
+      <div class="ink-cmp-face">
+        <!-- よく使う比較 + ブランチの見出し -->
+        <div class="ink-cmp-list" role="listbox"></div>
+        <!-- 絞り込みは組み直さない。毎回作ると入力の途中で焦点が外れる -->
+        <input class="ink-cmp-filter hidden" type="text" placeholder="ブランチを絞り込み" spellcheck="false" autocomplete="off" />
+        <div class="ink-cmp-branches" role="listbox"></div>
+        <button type="button" class="ink-cmp-manual">2 つの地点を選ぶ…</button>
+      </div>
+
+      <div class="ink-cmp-face ink-cmp-ends hidden">
+        <button type="button" class="ink-cmp-back">← 比較の一覧へ</button>
+        <!-- 両側とも同じ選び方。よく使う 3 つはボタンで、それ以外は「他…」から。
+             先に決めるのは「どこまで」— 分岐点は 2 点で決まるので、「どこから」の
+             候補は「どこまで」に依存する -->
+        <p class="ink-grm-head">どこまで</p>
+        <div class="ink-grm-ends" data-side="end"></div>
+        <p class="ink-grm-head">どこから</p>
+        <div class="ink-grm-ends" data-side="start"></div>
+      </div>
+
+      <!-- 候補の一覧。「他…」を押したときだけ、そのボタンの位置に開く。
+           親の中に置いてあるのは、外側クリックで親まで閉じないようにするため -->
+      <div class="ink-grm-picker hidden">
+        <input class="ink-grm-filter" type="text" placeholder="絞り込み / HEAD~3 など" spellcheck="false" autocomplete="off" />
+        <div class="ink-grm-list" role="listbox"></div>
+      </div>
     </div>
 
     <!-- 読書プログレスバー(ツールバー下端の細いライン) -->

@@ -5,7 +5,7 @@
 // ガワでも「その ID を開いているだけ」になり、置き場所が違うだけで済む。
 
 import { invoke } from "@tauri-apps/api/core";
-import type { ChangeRun, DocumentViewer } from "./viewer";
+import type { ChangeSpan, DocumentViewer } from "./viewer";
 import { dirname } from "../shared/paths";
 import { readMdFile } from "../chrome/files";
 
@@ -276,59 +276,53 @@ function drawRibbon(
   ribbon.innerHTML = paths.join("");
 }
 
-/// 左右のまとまりを突き合わせて帯にする。
+/// 左右の線を突き合わせて帯にする。
 ///
-/// 突き合わせるのは線そのもの (changeRuns)。線と別に範囲を組み立てると、
-/// まとめ方の違いがそのまま帯のズレになって出る。
+/// 突き合わせるのは線そのもの (changeSpans)。線と別に範囲を組み立てると、
+/// 出し方の違いがそのまま帯のズレになって出る。
 ///
-/// まとめ方は左右で食い違うことがある — 片方では 1 本、もう片方では 2 本に
-/// 割れる。その場合は 1 本の線に 2 つの帯が刺さる形になり、それでよい。
-/// 相手に線が無いもの (まるごとの追加・削除) は、相手側の点を頂点にする。
+/// 線はハンク 1 つにつき 1 本なので、突き合わせもハンク番号で引くだけ。
+/// つないでいたときは「左で 1 本・右で 2 本」が起きて、どちらに合わせても
+/// 帯か線のどちらかが食い違った。相手に線が無いもの (まるごとの追加・削除)
+/// は、相手側の点を頂点にする。
 function bandsOf(before: DocumentViewer, after: DocumentViewer): Band[] {
-  const bRuns = before.changeRuns();
-  const aRuns = after.changeRuns();
+  const solid = (v: DocumentViewer) => v.changeSpans().filter((s) => !s.point);
+  const bSpans = solid(before);
+  const aSpans = solid(after);
   const bPoints = before.changePoints();
   const aPoints = after.changePoints();
 
-  const mate = (runs: ChangeRun[], hunks: number[]) =>
-    runs.find((r) => r.hunks.some((h) => hunks.includes(h)));
-  const pointOf = (points: Map<number, number>, hunks: number[]) => {
-    for (const h of hunks) {
-      const y = points.get(h);
-      if (y !== undefined) return y;
-    }
-    return null;
-  };
+  const band = (b: ChangeSpan | number, a: ChangeSpan | number, kind: string): Band => ({
+    bTop: typeof b === "number" ? b : b.top,
+    bBottom: typeof b === "number" ? b : b.bottom,
+    aTop: typeof a === "number" ? a : a.top,
+    aBottom: typeof a === "number" ? a : a.bottom,
+    kind,
+  });
 
   const bands: Band[] = [];
-  const paired = new Set<ChangeRun>();
-  for (const b of bRuns) {
-    const a = mate(aRuns, b.hunks);
+  for (const b of bSpans) {
+    const a = aSpans.find((s) => s.hunk === b.hunk);
     if (a) {
-      paired.add(a);
-      bands.push({ bTop: b.top, bBottom: b.bottom, aTop: a.top, aBottom: a.bottom, kind: b.kind });
+      bands.push(band(b, a, b.kind));
       continue;
     }
-    const y = pointOf(aPoints, b.hunks);
-    if (y !== null) {
-      bands.push({ bTop: b.top, bBottom: b.bottom, aTop: y, aBottom: y, kind: b.kind });
-    }
+    const y = aPoints.get(b.hunk);
+    if (y !== undefined) bands.push(band(b, y, b.kind));
   }
-  for (const a of aRuns) {
-    if (paired.has(a)) continue;
-    const b = mate(bRuns, a.hunks);
-    if (b) {
-      bands.push({ bTop: b.top, bBottom: b.bottom, aTop: a.top, aBottom: a.bottom, kind: a.kind });
-      continue;
-    }
-    const y = pointOf(bPoints, a.hunks);
-    if (y !== null) {
-      bands.push({ bTop: y, bBottom: y, aTop: a.top, aBottom: a.bottom, kind: a.kind });
-    }
+  for (const a of aSpans) {
+    // 上で組にしたものは済み
+    if (bSpans.some((s) => s.hunk === a.hunk)) continue;
+    const y = bPoints.get(a.hunk);
+    if (y !== undefined) bands.push(band(y, a, a.kind));
   }
 
   return bands.sort((x, y) => x.bTop - y.bTop || x.aTop - y.aTop);
 }
+
+/// 末尾に共通の中身が残っていると見なす最小の丈。丸めや枠の太さで数 px の
+/// 差は出るので、行 1 つぶんに満たないものは「残っていない」とする。
+const COMMON_TAIL = 12;
 
 /// 左右の動きを合わせる。
 ///
@@ -363,6 +357,9 @@ export function keepSynced(
   let tPts: number[] = [0, 0];
   let bPts: number[] = [0, 0];
   let aPts: number[] = [0, 0];
+  /// 変わったところの頭にあたる対応点 (外枠の位置)。↓↑ の行き先はここだけ。
+  /// 尻にも対応点はあるが、そこにも止まると 1 つの差分に 2 回ぶつかる。
+  let stops: number[] = [];
 
   let bMax = 0;
   let aMax = 0;
@@ -404,16 +401,14 @@ export function keepSynced(
     const keep = scroller.scrollTop;
     viewport.style.height = `${h}px`;
 
-    // 対応表の末尾は「内容の総高さ」にする。スクロールできる量 (総高さ − 画面)
-    // で止めると、基準点を画面の中ほどに置いたぶんだけ手前で頭打ちになる。
-    const bEnd = before.scrollEl.scrollHeight;
-    const aEnd = after.scrollEl.scrollHeight;
-
     bands = bandsOf(before, after);
 
-    // 逃げ (bPad / aPad) は自分で足したものなので、中身の丈から外して測る
-    const bBody = bEnd - bPad.offsetHeight;
-    const aBody = aEnd - aPad.offsetHeight;
+    // 中身の丈。ずらすのは本文 (contentEl) なので、丈も本文で測る。外枠
+    // (scrollEl) で測ると本文の外の余白がぶんだけ大きく出て、その差だけ
+    // 本文を上へ送りすぎる — 片側が短いところで、短いほうが止まらずに
+    // 画面の外へ流れ去る。
+    const bBody = before.contentEl.scrollHeight;
+    const aBody = after.contentEl.scrollHeight;
 
     // 末尾に「片側にしか無い差分」が続いているところは、下を左右で揃えない。
     //
@@ -424,25 +419,46 @@ export function keepSynced(
     //
     // 続いているぶんをまとめて見るのが肝。いちばん後ろの 1 つだけを見ると、
     // その手前で止まっていたぶんが数に入らず、逃げが足りない。
+    //
+    // ただし、その後ろに共通の中身が残っているなら話は別。そこは左右で同じ
+    // ものが並ぶ「揃えるべき末尾」なので、片側だけの差分がいくつ続いていても
+    // 尻を積んで揃える。揃えないのは、文書がその差分で終わっているときだけ。
+    const tail = bands[bands.length - 1];
+    const common = tail
+      ? Math.min(bBody - tail.bBottom, aBody - tail.aBottom) > COMMON_TAIL
+      : false;
     let openFrom = bands.length;
-    while (openFrom > 0) {
+    while (!common && openFrom > 0) {
       const b = bands[openFrom - 1];
       if (b.bTop !== b.bBottom && b.aTop !== b.aBottom) break;
       openFrom--;
     }
 
-    // 帯の端は本文の縁 — 差分の線が出ているところ。線は縁に 1px 重ねて
-    // 幅 4px なので、その外側から出す
+    // 帯の端は本文の縁 — 差分の線が出ているところ。線は紙の枠に重ねて置いて
+    // あるので (viewer.css の left/right: -1px)、外の端は紙の外枠にぴたりと
+    // 揃う。そこから出せば線から素直に伸びる。
+    //
+    // 縦は逆に内枠が起点。線は紙の中に置く要素なので、その位置は内枠から
+    // 数えた値になる (changeSpans も同じ)。offsetIn が返すのは外枠なので、
+    // 枠の太さ (clientTop) を足さないと帯だけ 1px 上にずれる。
+    //
+    // 横だけは矩形で測る。offsetLeft / offsetWidth は整数に丸めた値なので、
+    // 紙の幅が半端なところに来ると 0.5px ずれて髪の毛ほどの隙間が残る。
+    // ずらしているのは縦だけなので、横は矩形で測っても transform の影響を
+    // 受けない (縦は受けるので offsetIn のまま)。
     const bo = offsetIn(before.contentEl, viewport);
     const ao = offsetIn(after.contentEl, viewport);
-    x0 = bo.x + before.contentEl.offsetWidth + 3;
-    x1 = ao.x - 1;
-    bY = bo.y;
-    aY = ao.y;
+    const vx = viewport.getBoundingClientRect().left;
+    x0 = before.contentEl.getBoundingClientRect().right - vx;
+    x1 = after.contentEl.getBoundingClientRect().left - vx;
+    bY = bo.y + before.contentEl.clientTop;
+    aY = ao.y + after.contentEl.clientTop;
 
     bPts = [0];
     aPts = [0];
-    const push = (bv: number, av: number) => {
+    // 積んだ対応点が「変わったところの頭」かどうか。tPts と添字を揃える
+    const isTop: boolean[] = [false];
+    const push = (bv: number, av: number, top: boolean) => {
       // 補間できるよう、どちらも前の点より後ろに進むものだけを採る
       if (bv < bPts[bPts.length - 1] || av < aPts[aPts.length - 1]) return;
       if (bv > bBody || av > aBody) return;
@@ -450,6 +466,7 @@ export function keepSynced(
       if (bv === bPts[bPts.length - 1] && av === aPts[aPts.length - 1]) return;
       bPts.push(bv);
       aPts.push(av);
+      isTop.push(top);
     };
 
     // 対応点は帯の頭と尻。片側が点の帯 (まるごとの追加・削除) では、その側の
@@ -458,17 +475,17 @@ export function keepSynced(
     // 左右が同じだけ進み、短いほうは中身が尽きて空白になる。
     const points = bands.flatMap((b, i) =>
       i >= openFrom
-        ? [{ b: b.bTop, a: b.aTop }]
+        ? [{ b: b.bTop, a: b.aTop, top: true }]
         : [
-            { b: b.bTop, a: b.aTop },
-            { b: b.bBottom, a: b.aBottom },
+            { b: b.bTop, a: b.aTop, top: true },
+            { b: b.bBottom, a: b.aBottom, top: false },
           ]
     );
 
     // 左右それぞれで前へ進む順に並べてから積む (両側を別々に回しているので、
     // そのままでは順序が入れ替わり、補間が壊れる)
     points.sort((x, y) => x.b - y.b || x.a - y.a);
-    for (const p of points) push(p.b, p.a);
+    for (const p of points) push(p.b, p.a, p.top);
 
     // 最後の対応点から下に残っている量を、左右で揃える。短いほうに足した
     // 逃げは本文の外に置くので、紙の丈は中身なりのまま。
@@ -484,9 +501,12 @@ export function keepSynced(
 
     bPts.push(bTotal);
     aPts.push(aTotal);
+    isTop.push(false);
     if (bPts.length < 3) {
       bPts = [0, bTotal];
       aPts = [0, aTotal];
+      isTop.length = 0;
+      isTop.push(false, false);
     }
 
     // 外枠は「区間ごとに長い方」の積み上げ。こうするとどちらの中身も
@@ -497,6 +517,7 @@ export function keepSynced(
       tPts.push(tPts[i - 1] + span);
     }
     track.style.height = `${tPts[tPts.length - 1]}px`;
+    stops = tPts.filter((_, i) => isTop[i]);
 
     if (scroller.scrollTop !== keep) scroller.scrollTop = keep;
     apply();
@@ -523,8 +544,7 @@ export function keepSynced(
 
   return {
     jump(dir) {
-      // 行き先は変わったまとまりの頭。両端 (先頭と末尾) は外す
-      const stops = tPts.slice(1, -1);
+      // 行き先は変わったまとまりの頭 (rebuild で選り分けてある)
       const cur = scroller.scrollTop;
       const next =
         dir > 0 ? stops.find((t) => t > cur + 4) : [...stops].reverse().find((t) => t < cur - 4);

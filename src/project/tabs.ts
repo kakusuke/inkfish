@@ -18,6 +18,9 @@ export type StripHooks = {
   /// タブ列の外で離された。座標はデスクトップ上の位置 (論理ピクセル)。
   /// 切り離すか別の窓へ渡すかの判断はガワが行う。
   onDropOutside: (id: string, screenX: number, screenY: number) => void;
+  /// 右クリックされた。座標は client。メニューの中身はガワが組む
+  /// (タブが指しているものを知っているのはガワの側)。
+  onMenu: (id: string, x: number, y: number) => void;
 };
 
 /// 掴んだ時点でのタブの並びと位置。ドラッグ中は DOM を動かさないので、
@@ -96,6 +99,12 @@ export class TabStrip {
       if (e.button !== 1) return;
       const tab = (e.target as HTMLElement).closest<HTMLElement>("[data-tab]");
       if (tab) this.hooks.onClose(tab.dataset.tab!);
+    });
+    this.root.addEventListener("contextmenu", (e) => {
+      const tab = (e.target as HTMLElement).closest<HTMLElement>("[data-tab]");
+      if (!tab) return;
+      e.preventDefault();
+      this.hooks.onMenu(tab.dataset.tab!, e.clientX, e.clientY);
     });
   }
 

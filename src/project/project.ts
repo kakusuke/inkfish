@@ -6,6 +6,7 @@ import { openUrl, openPath as openExternal } from "@tauri-apps/plugin-opener";
 import type { LinkTarget } from "../viewer/viewer";
 import { Toast, wireLinkStatus } from "../chrome/toast";
 import { PopoverGroup } from "../chrome/popover";
+import { ContextMenu, copyItems } from "../chrome/ctxmenu";
 import { FindBar } from "../chrome/findbar";
 import { fillSettings, openInEditor, wireSettings } from "../chrome/settings";
 import { exportPdf } from "../chrome/pdf";
@@ -28,8 +29,8 @@ import { shortenPath } from "../shared/paths";
 import { DocTab } from "./tab";
 import { TreePane } from "./tree";
 import { GitPane, RangeMenu } from "./git";
-import { isRev, isVirtual } from "../shared/rev";
-import type { Range as GitRange } from "./git";
+import { isVirtual } from "../shared/rev";
+import type { Comparison } from "./git";
 import { TabStrip, type TabView } from "./tabs";
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
@@ -54,6 +55,9 @@ export class ProjectShell {
 
   private toast: Toast;
   private popovers = new PopoverGroup();
+  /// 右クリックのメニュー。ウィンドウに 1 つで、ヘッダー・タブ・ツリーの行・
+  /// 変更の行が共有する
+  private menu = new ContextMenu();
   private findBar: FindBar;
   private tree: TreePane;
   private git: GitPane;
@@ -75,7 +79,7 @@ export class ProjectShell {
     this.progressEl = $(".ink-progress");
     this.capsule = $<HTMLButtonElement>(".ink-capsule");
 
-    this.tree = new TreePane($(".ink-tree"), {
+    this.tree = new TreePane($(".ink-tree"), this.menu, {
       onOpen: (p) => void this.openPath(p),
       onNotice: (m) => this.toast.show(m),
     });
@@ -85,10 +89,11 @@ export class ProjectShell {
       $(".ink-hsplitter"),
       $(".ink-git-list"),
       $(".ink-git-range"),
-      $(".ink-git-menu"),
+      this.menu,
       {
         onOpen: (p) => void this.openPath(p),
         onNotice: (m) => this.toast.show(m),
+        onPick: (c) => void this.setComparison(c),
       }
     );
 
@@ -97,6 +102,7 @@ export class ProjectShell {
       onClose: (id) => this.closeTab(id),
       onReorder: (ids) => this.reorder(ids),
       onDropOutside: (id, x, y) => void this.dropOutside(id, x, y),
+      onMenu: (id, x, y) => this.openTabMenu(id, x, y),
     });
 
     this.findBar = new FindBar($(".ink-findbar"), {
@@ -169,6 +175,17 @@ export class ProjectShell {
     });
     this.windowMenu.close = () => this.popovers.close(windowPopover);
     this.capsule.addEventListener("click", () => this.popovers.toggle(windowPopover));
+    // カプセルが出しているのはフォルダのパス。貼ればこのフォルダが開く
+    this.capsule.addEventListener("contextmenu", (e) => {
+      if (!this.root) return;
+      e.preventDefault();
+      this.popovers.closeAll();
+      this.menu.open(
+        copyItems(this.root, (m) => this.toast.show(m)),
+        e.clientX,
+        e.clientY
+      );
+    });
     window.addEventListener("keydown", (e) => {
       if (!this.popovers.isOpen(windowPopover)) return;
       if (this.windowMenu.handleKey(e.key)) e.preventDefault();
@@ -177,6 +194,8 @@ export class ProjectShell {
     $('[data-act="open"]').addEventListener("click", () => void this.pickFile());
     $('[data-act="open-dir"]').addEventListener("click", () => void this.pickDir());
     $('[data-act="edit"]').addEventListener("click", () => void this.editActive());
+    $('[data-act="diff-prev"]').addEventListener("click", () => this.active?.sync?.jump(-1));
+    $('[data-act="diff-next"]').addEventListener("click", () => this.active?.sync?.jump(1));
     $('[data-act="refresh-tree"]').addEventListener("click", () => void this.tree.refresh());
   }
 
@@ -259,8 +278,10 @@ export class ProjectShell {
     const rangePanel = $(".ink-git-range-menu");
     this.rangeMenu = new RangeMenu(rangePanel, {
       getRoot: () => this.root || null,
-      getRange: () => this.git.currentRange,
-      onPick: (r) => void this.setGitRange(r),
+      getComparison: () => this.git.comparison,
+      getBase: () => this.git.base,
+      onPick: (c) => void this.setComparison(c),
+      onDone: () => this.popovers.close(rangePopover),
       onFetched: () => void this.refreshGit(),
       onNotice: (m) => this.toast.show(m),
     });
@@ -272,8 +293,8 @@ export class ProjectShell {
     rangeBtn.addEventListener("click", () => this.popovers.toggle(rangePopover));
   }
 
-  private async setGitRange(range: GitRange) {
-    await this.git.setRange(range);
+  private async setComparison(c: Comparison) {
+    await this.git.setComparison(c);
     // 範囲を変えてもツリーの基準 (HEAD) は変わらないが、取り直したので塗り直す
     this.tree.markGit(this.git.headStates);
   }
@@ -559,9 +580,14 @@ export class ProjectShell {
     }));
     this.strip.render(views, this.activeId);
     this.emptyEl.classList.toggle("hidden", this.tabs.length > 0);
-    // 起点版は実ファイルが無いのでエディタでは開けない
-    const editable = !!this.active && !isRev(this.active.path);
+    // 起点版も差分も実ファイルが無いのでエディタでは開けない
+    const editable = !!this.active && !isVirtual(this.active.path);
     $('[data-act="edit"]').classList.toggle("hidden", !editable);
+    // 変わったところを渡り歩くのは、左右に並べているときだけ
+    const walkable = !!this.active?.sync;
+    for (const act of ["diff-prev", "diff-next"]) {
+      $(`[data-act="${act}"]`).classList.toggle("hidden", !walkable);
+    }
     const openPaths = this.tabs.map((t) => t.path);
     this.tree.markOpen(openPaths, this.active?.path ?? null);
     this.git.markOpen(openPaths, this.active?.path ?? null);
@@ -573,6 +599,18 @@ export class ProjectShell {
       Math.max(0, active)
     ).catch(() => {});
     watchFiles(this.tabs.map((t) => t.path)).catch(() => {});
+  }
+
+  /// タブの右クリック。タブが指しているのは ID (ファイルのパス・起点版・差分)
+  /// なので、コピーはそれで取る。
+  private openTabMenu(id: string, x: number, y: number) {
+    const tab = this.tabs.find((t) => t.id === id);
+    if (!tab) return;
+    this.menu.open(
+      copyItems(tab.path, (m) => this.toast.show(m)),
+      x,
+      y
+    );
   }
 
   /// ヘッダーとウィンドウタイトルはディレクトリのパスを出す。
