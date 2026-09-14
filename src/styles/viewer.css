@@ -4,9 +4,13 @@
 /* 上端の逃げはガワの寸法なので、ガワが --ink-chrome-top で宣言する。
    ツールバーを持たないウィンドウでは既定の 0 になり、本文が上端から始まる。 */
 .ink-viewer {
-  height: 100%;
+  /* スクロールする器そのものをツールバーの下から始める。padding で中身だけを
+     逃がすと、器はツールバーの裏まで伸びたままなので、スクロールバーがツール
+     バーに潜り込む (.is-diff も同じ理由で同じことをしている)。
+     タブの中とガワの無い窓では --ink-chrome-top が 0 なので、そのまま全面。 */
+  margin-top: var(--ink-chrome-top, 0px);
+  height: calc(100% - var(--ink-chrome-top, 0px));
   overflow-y: auto;
-  padding-top: var(--ink-chrome-top, 0px);
   scrollbar-gutter: stable both-edges;
   /* 文字色は中身が自分で持つ。body から継承すると、書き出し中に
      `.ink-viewer.is-exporting` がトークンをライトへ倒しても、body で

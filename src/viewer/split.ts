@@ -403,12 +403,10 @@ export function keepSynced(
 
     bands = bandsOf(before, after);
 
-    // 中身の丈。ずらすのは本文 (contentEl) なので、丈も本文で測る。外枠
-    // (scrollEl) で測ると本文の外の余白がぶんだけ大きく出て、その差だけ
-    // 本文を上へ送りすぎる — 片側が短いところで、短いほうが止まらずに
-    // 画面の外へ流れ去る。
-    const bBody = before.contentEl.scrollHeight;
-    const aBody = after.contentEl.scrollHeight;
+    // 中身の丈。逃げ (bPad / aPad) は相手に合わせるために自分で足したものなので、
+    // 外して測る。
+    const bBody = before.scrollEl.scrollHeight - bPad.offsetHeight;
+    const aBody = after.scrollEl.scrollHeight - aPad.offsetHeight;
 
     // 末尾に「片側にしか無い差分」が続いているところは、下を左右で揃えない。
     //
@@ -423,9 +421,15 @@ export function keepSynced(
     // ただし、その後ろに共通の中身が残っているなら話は別。そこは左右で同じ
     // ものが並ぶ「揃えるべき末尾」なので、片側だけの差分がいくつ続いていても
     // 尻を積んで揃える。揃えないのは、文書がその差分で終わっているときだけ。
+    // 帯の座標は本文 (contentEl) の中のものなので、残りを測る丈も本文で取る。
+    // 外枠 (scrollEl) の丈と比べると本文の外の余白がそのまま差に乗り、共通の
+    // 末尾が無いときまで「ある」と見てしまう。
     const tail = bands[bands.length - 1];
     const common = tail
-      ? Math.min(bBody - tail.bBottom, aBody - tail.aBottom) > COMMON_TAIL
+      ? Math.min(
+          before.contentEl.scrollHeight - tail.bBottom,
+          after.contentEl.scrollHeight - tail.aBottom
+        ) > COMMON_TAIL
       : false;
     let openFrom = bands.length;
     while (!common && openFrom > 0) {
@@ -496,6 +500,10 @@ export function keepSynced(
     aPad.style.height = `${Math.max(0, -slack)}px`;
     const bTotal = bBody + Math.max(0, slack);
     const aTotal = aBody + Math.max(0, -slack);
+
+    // 上限には逃げも入れる。短いほうは中身が尽きたあとも逃げのぶんだけ送られて
+    // 画面から出ていき、そこに空白が残る。これは意図した見え方で、足された
+    // (消された) ぶんがどちらの文書のものかを、その空白で見せている。
     bMax = Math.max(0, bTotal - h);
     aMax = Math.max(0, aTotal - h);
 
