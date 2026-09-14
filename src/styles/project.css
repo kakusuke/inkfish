@@ -982,6 +982,16 @@ body.is-pane-collapsed .ink-tabstrip {
   pointer-events: none;
 }
 
+/* visibility では消えず、スクロールバーだけが描かれ続ける。裏に控えているタブの
+   数だけ右端に重なって見えるので、スクロールそのものを止めて消す
+   (::-webkit-scrollbar は macOS の重ね置きのスクロールバーには効かない)。
+   差分ではこの枠自身が器になる (makeSides に渡している) ので、枠と中身の両方に
+   当てる。表に出すときに戻り、そこで測り直される。 */
+.ink-tabpane.is-inactive,
+.ink-tabpane.is-inactive .ink-viewer {
+  overflow: hidden;
+}
+
 /* 別のウィンドウがこの窓の上に来ている。タブとして受け入れられることを示す */
 body.is-dock-target .ink-tabstrip {
   outline: 2px dashed var(--accent);
